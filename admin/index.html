@@ -133,6 +133,7 @@
     <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN SANIBEL', this)">2026 MASTER PLAN SANIBEL</div>
     <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN VERO', this)">2026 MASTER PLAN VERO</div>
     <div class="tab-item" onclick="switchSheetTab('SITE OPTIONS', this)">SITE OPTIONS</div>
+    <div class="tab-item" onclick="switchSheetTab('ADDITIONAL PRICING', this)">ADDITIONAL PRICING</div>
     <div class="tab-item" onclick="switchSheetTab('SALES NOTES', this)">SALES NOTES</div>
     <div class="tab-item" onclick="switchSheetTab('TEMPLATE', this)">TEMPLATE</div>
     <div class="tab-item" onclick="switchSheetTab('SALES VERSION', this)">SALES VERSION</div>
@@ -276,12 +277,13 @@ async function confirmEdit() {
     return;
   }
 
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf'];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
     payload['amount'] = (parseFloat(newVal) || 0) * targetQty;
   } else {
-    payload[col] = (col === 'amount' || col === 'quantity' || col === 'cost') ? parseFloat(newVal) || 0 : newVal;
+    payload[col] = NUMERIC_COLS.includes(col) ? parseFloat(newVal) || 0 : newVal;
   }
 
   const { error } = await sb.from(table).update(payload).eq('id', id);
@@ -322,6 +324,34 @@ async function loadSheetData() {
         <td colspan="2"><strong>${so.option_label}</strong></td>
         <td colspan="2">$${so.cost} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'cost', '${so.option_label}', 'Cost ($)', '=COST', '${so.cost}')">✏️</button></td>
         <td>${so.notes || ''} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'notes', '${so.option_label}', 'Notes', '', '${so.notes || ''}')">✏️</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    return;
+  }
+
+  if (activeTab === 'ADDITIONAL PRICING') {
+    const { data } = await sb.from('basement_pricing').select('*').eq('id', 1).single();
+    if (!data) return;
+    let rowIdx = 1;
+    let trHdr = document.createElement('tr');
+    trHdr.className = 'col-hdr';
+    trHdr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">BASEMENT PRICING</td>`;
+    tbody.appendChild(trHdr);
+
+    const fields = [
+      { key: 'fixed_cost_per_house', label: 'Fixed Cost Per House ($)' },
+      { key: 'shell_cost_per_sf',    label: 'Shell Cost Per SF ($)' },
+      { key: 'finish_cost_per_sf',   label: 'Finish Cost Per SF ($)' }
+    ];
+    fields.forEach(f => {
+      let tr = document.createElement('tr');
+      let currRow = rowIdx++;
+      tr.innerHTML = `
+        <td class="row-hdr" style="text-align:center;">${currRow}</td>
+        <td colspan="3"><strong>${f.label}</strong></td>
+        <td colspan="2">$${data[f.key]} <button class="pencil-btn" onclick="openEditModal('basement_pricing', ${data.id}, '${f.key}', '${f.label}', '${f.label}', '=${f.key.toUpperCase()}', '${data[f.key]}')">✏️</button></td>
+        <td></td>
       `;
       tbody.appendChild(tr);
     });
@@ -478,6 +508,8 @@ const SHEET_ID = '1iO37IiTagtu4OGEZSHA5C62tPRc5HOKMpq0UcsUI9ig';
 const CUSTOM_TAB = '2026 CUSTOM PLAN';
 const HOUSE_TABS = { kiawah: '2026 MASTER PLAN KIAWAH', sanibel: '2026 MASTER PLAN SANIBEL', vero: '2026 MASTER PLAN VERO' };
 const SITE_TAB = 'SITE OPTIONS';
+const ADDITIONAL_PRICING_TAB = 'ADDITIONAL PRICING';
+const ADDITIONAL_PRICING_CELLS = { fixed_cost_per_house: 'B2', shell_cost_per_sf: 'B3', finish_cost_per_sf: 'B4' };
 const SYNC_STATE_KEY = 'keelSyncState';
 
 let sheetsAccessToken = null;
@@ -542,8 +574,12 @@ async function sheetsWriteOne(token, range, value) {
 }
 
 function loadSyncState() {
-  try { return JSON.parse(localStorage.getItem(SYNC_STATE_KEY)) || { costFormulas: {}, houseRates: {}, siteOptions: {} }; }
-  catch (e) { return { costFormulas: {}, houseRates: {}, siteOptions: {} }; }
+  const fallback = { costFormulas: {}, houseRates: {}, siteOptions: {}, basementPricing: {} };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SYNC_STATE_KEY)) || fallback;
+    if (!parsed.basementPricing) parsed.basementPricing = {};
+    return parsed;
+  } catch (e) { return fallback; }
 }
 function saveSyncState(state) { localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(state)); }
 
@@ -569,20 +605,23 @@ async function computeSyncPlan() {
   const state = loadSyncState();
   const pushes = [], pulls = [], conflicts = [];
 
-  const [{ data: costItems }, { data: houseRates }, { data: siteOptions }] = await Promise.all([
+  const [{ data: costItems }, { data: houseRates }, { data: siteOptions }, { data: basementPricingRows }] = await Promise.all([
     sb.from('cost_items').select('id,item_name,quantity_formula'),
     sb.from('house_rates').select('cost_item_id,house,amount'),
-    sb.from('site_options').select('id,category,option_label,cost')
+    sb.from('site_options').select('id,category,option_label,cost'),
+    sb.from('basement_pricing').select('*').eq('id', 1)
   ]);
+  const basementPricing = basementPricingRows && basementPricingRows[0];
 
   const ranges = [
     `'${CUSTOM_TAB}'!B3:D100`,
     `'${HOUSE_TABS.kiawah}'!B3:E100`,
     `'${HOUSE_TABS.sanibel}'!B3:E100`,
     `'${HOUSE_TABS.vero}'!B3:E100`,
-    `'${SITE_TAB}'!A2:C60`
+    `'${SITE_TAB}'!A2:C60`,
+    `'${ADDITIONAL_PRICING_TAB}'!B2:B4`
   ];
-  const [customRows, kiawahRows, sanibelRows, veroRows, siteRows] = await sheetsGet(token, ranges);
+  const [customRows, kiawahRows, sanibelRows, veroRows, siteRows, additionalPricingRows] = await sheetsGet(token, ranges);
   const houseRows = { kiawah: kiawahRows, sanibel: sanibelRows, vero: veroRows };
 
   const itemById = {};
@@ -637,6 +676,20 @@ async function computeSyncPlan() {
     if (action === 'conflict') { conflicts.push({ type: 'site_cost', item: key, supabase: opt.cost, sheet: sheetCost }); continue; }
     if (action === 'push') pushes.push({ type: 'site_cost', item: key, range: `'${SITE_TAB}'!C${rowIdx + 2}`, value: opt.cost, stateKey: 'siteOptions', stateField: key });
     else pulls.push({ type: 'site_cost', siteOptionId: opt.id, item: key, value: sheetCost, stateKey: 'siteOptions', stateField: key });
+  }
+
+  // Basement pricing constants vs ADDITIONAL PRICING tab
+  if (basementPricing) {
+    const bpFieldOrder = ['fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf'];
+    bpFieldOrder.forEach((field, idx) => {
+      const sheetVal = Number((additionalPricingRows[idx] && additionalPricingRows[idx][0]) || 0);
+      const supaVal = Number(basementPricing[field]);
+      const action = decideSyncAction(state.basementPricing[field], supaVal, sheetVal);
+      if (action === 'unchanged') return;
+      if (action === 'conflict') { conflicts.push({ type: 'basement_pricing', item: field, supabase: supaVal, sheet: sheetVal }); return; }
+      if (action === 'push') pushes.push({ type: 'basement_pricing', item: field, range: `'${ADDITIONAL_PRICING_TAB}'!${ADDITIONAL_PRICING_CELLS[field]}`, value: supaVal, stateKey: 'basementPricing', stateField: field });
+      else pulls.push({ type: 'basement_pricing', field, item: field, value: sheetVal, stateKey: 'basementPricing', stateField: field });
+    });
   }
 
   return { token, state, pushes, pulls, conflicts };
@@ -695,6 +748,7 @@ async function applySyncChanges() {
       if (pull.type === 'formula') ({ error } = await sb.from('cost_items').update({ quantity_formula: pull.value }).eq('id', pull.costItemId));
       else if (pull.type === 'amount') ({ error } = await sb.from('house_rates').update({ amount: pull.value }).eq('cost_item_id', pull.costItemId).eq('house', pull.house));
       else if (pull.type === 'site_cost') ({ error } = await sb.from('site_options').update({ cost: pull.value }).eq('id', pull.siteOptionId));
+      else if (pull.type === 'basement_pricing') ({ error } = await sb.from('basement_pricing').update({ [pull.field]: pull.value }).eq('id', 1));
       if (error) { results.push('FAILED: ' + pull.item + ' — ' + error.message); continue; }
       state[pull.stateKey][pull.stateField] = pull.value;
       results.push('Pulled: ' + pull.item);
