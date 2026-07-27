@@ -355,6 +355,42 @@ async function loadSheetData() {
       `;
       tbody.appendChild(tr);
     });
+
+    // Basement Total (SF) and Grand Total ($) — read-only, live from the
+    // Sheet's Additional Pricing tab (B5/B6), written whenever an estimate
+    // with a basement is confirmed. Informational record only, not a
+    // Supabase-stored constant, so there's no pencil-edit here.
+    let trTotal = document.createElement('tr');
+    let totalRow = rowIdx++;
+    trTotal.innerHTML = `
+      <td class="row-hdr" style="text-align:center;">${totalRow}</td>
+      <td colspan="3"><strong>Basement Total (SF) — last written job</strong></td>
+      <td colspan="2" id="basement-total-cell">Loading…</td>
+      <td></td>
+    `;
+    tbody.appendChild(trTotal);
+    let trGrandTotal = document.createElement('tr');
+    let grandTotalRow = rowIdx++;
+    trGrandTotal.innerHTML = `
+      <td class="row-hdr" style="text-align:center;">${grandTotalRow}</td>
+      <td colspan="3"><strong>Basement Grand Total ($) — last written job</strong></td>
+      <td colspan="2" id="basement-grand-total-cell">Loading…</td>
+      <td></td>
+    `;
+    tbody.appendChild(trGrandTotal);
+    try {
+      const token = await getSheetsAccessToken();
+      const [totalRows, grandTotalRows] = await sheetsGet(token, [`'ADDITIONAL PRICING'!B5`, `'ADDITIONAL PRICING'!B6`]);
+      const cell = document.getElementById('basement-total-cell');
+      if (cell) cell.textContent = (totalRows && totalRows[0] && totalRows[0][0]) || '0';
+      const gtCell = document.getElementById('basement-grand-total-cell');
+      if (gtCell) gtCell.textContent = '$' + ((grandTotalRows && grandTotalRows[0] && grandTotalRows[0][0]) || '0');
+    } catch (e) {
+      const cell = document.getElementById('basement-total-cell');
+      if (cell) cell.textContent = '(could not read — ' + e.message + ')';
+      const gtCell = document.getElementById('basement-grand-total-cell');
+      if (gtCell) gtCell.textContent = '(could not read)';
+    }
     return;
   }
 
