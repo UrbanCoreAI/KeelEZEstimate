@@ -908,8 +908,6 @@
       <div class="card">
         <div class="section-label">Building Areas <span>Square Feet</span></div>
 
-        <div class="f-row"><span class="f-label">Basement</span>
-          <input class="f-input" type="number" data-key="basement" placeholder="0" min="0"></div>
         <div class="f-row"><span class="f-label">1st Floor</span>
           <input class="f-input" type="number" data-key="1st floor" placeholder="0" min="0"></div>
         <div class="f-row"><span class="f-label">2nd Floor</span>
@@ -980,6 +978,19 @@
         <button id="calc-history-btn" type="button" class="calc-history-btn">▾ History</button>
         <div id="calc-history-drop" class="calc-history-drop" style="display:none;"></div>
       </div>
+    </div>
+
+    <!-- ── Basement — priced separately, not part of the standard cost items ── -->
+    <div class="card">
+      <div class="section-label">Basement <span>Priced separately — becomes its own line item(s)</span></div>
+      <div class="f-row"><span class="f-label">Finished Basement (SF)</span>
+        <input type="number" id="basement-finished-sf" placeholder="0" min="0"></div>
+      <div class="f-row"><span class="f-label">Finished Basement Description</span>
+        <input type="text" id="basement-finished-desc" placeholder="Description…"></div>
+      <div class="f-row"><span class="f-label">Unfinished Basement (SF)</span>
+        <input type="number" id="basement-unfinished-sf" placeholder="0" min="0"></div>
+      <div class="f-row"><span class="f-label">Unfinished Basement Description</span>
+        <input type="text" id="basement-unfinished-desc" placeholder="Description…"></div>
     </div>
 
     <!-- ── Custom Selection Allowances ── -->
@@ -1205,8 +1216,12 @@ const sbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SU
 // KeelEZEstimateExtensionV1/supabase-migration/calc-engine.js — these two
 // copies are kept in sync by hand since the two projects don't share a
 // build step.
+// Row 3 (basement) is deliberately absent — basement is priced entirely by
+// its own dedicated Finished/Unfinished Basement lines (see
+// computeBasementCosts below), not folded into any cost item's quantity.
+// Sheet cell I3 is no longer read or written anywhere in this file.
 const ROW_TO_FIELD = {
-  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
+  4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
   7: 'attic_storage_sf', 8: 'habitable_attic_sf',
   9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
   18: 'exterior_doors', 19: 'windows', 20: 'baths',
@@ -1214,11 +1229,49 @@ const ROW_TO_FIELD = {
   24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
   27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
 };
-const TOTAL_AREA_ROWS = [3,4,5,6,7,8,9,10,11,12];
+const TOTAL_AREA_ROWS = [4,5,6,7,8,9,10,11,12];
+
+// Basement pricing — a fixed cost plus two flat $/SF rates, not part of
+// the quantity_formula/cost_items system (see 04_basement_pricing.sql).
+// Fixed cost is claimed by Unfinished whenever present; Finished only
+// claims it for a finished-only basement (no unfinished SF in the job).
+function computeBasementCosts(finishedSf, unfinishedSf, pricing) {
+  const result = { unfinished: null, finished: null };
+  if (unfinishedSf > 0) {
+    result.unfinished = pricing.fixed_cost_per_house + unfinishedSf * pricing.shell_cost_per_sf;
+  }
+  if (finishedSf > 0) {
+    const fixedShare = unfinishedSf > 0 ? 0 : pricing.fixed_cost_per_house;
+    result.finished = fixedShare + finishedSf * pricing.shell_cost_per_sf + finishedSf * pricing.finish_cost_per_sf;
+  }
+  return result;
+}
 function totalAreaSum(jq) {
   return TOTAL_AREA_ROWS.reduce((sum, row) => sum + (Number(jq[ROW_TO_FIELD[row]]) || 0), 0);
 }
 const CELL_REF_RE = /\$?I\$?(\d+)/g;
+const KNOWN_ROWS = Object.keys(ROW_TO_FIELD).map(Number);
+// Confirms a formula is one of the 4 confirmed-safe Sheet formula patterns
+// (see calc-engine.js). If Supabase still has an OLD-format formula (e.g.
+// "floor1_sf+floor2_sf" from before this project switched to storing the
+// literal Sheet formula text), this catches it here with a clear error
+// instead of evaluateQuantityFormula silently returning 0.
+function validateQuantityFormula(formula) {
+  const f = (formula || '').trim();
+  if (f === '') return { valid: false, reason: 'empty formula' };
+  if (!f.startsWith('=')) return isFinite(Number(f)) ? { valid: true } : { valid: false, reason: 'does not start with "=" and is not a plain number — looks like an OLD-format formula (e.g. "floor1_sf+floor2_sf") that was never re-migrated to the new literal Sheet-formula format' };
+  const body = f.slice(1);
+  CELL_REF_RE.lastIndex = 0;
+  const refs = body.match(CELL_REF_RE);
+  if (!refs) return { valid: false, reason: 'no $I$N / IN references found' };
+  const stripped = body.replace(/\s+/g, '');
+  if (stripped !== refs.join('+')) return { valid: false, reason: 'contains something other than a "+"-joined chain of references' };
+  for (const ref of refs) {
+    const rowNum = parseInt(ref.match(/(\d+)/)[0], 10);
+    if (rowNum !== 13 && !KNOWN_ROWS.includes(rowNum)) return { valid: false, reason: 'references unknown row ' + rowNum };
+  }
+  return { valid: true };
+}
 function evaluateQuantityFormula(formula, jq) {
   const f = (formula || '').trim();
   if (f === '') return 0;
@@ -1257,11 +1310,13 @@ function buildJobQuantitiesFromInputs() {
 // KeelEZEstimateExtensionV1/supabase-migration/verify-calc-engine.js.
 async function computeCellsFromSupabase(neededRows) {
   const jq = buildJobQuantitiesFromInputs();
+  console.log('[Supabase estimate] job quantities read from the form:', jq);
+
   const codes = neededRows.map(String);
-  const { data, error } = await sbClient.from('cost_items').select('cost_code,quantity_formula').in('cost_code', codes);
+  const { data, error } = await sbClient.from('cost_items').select('cost_code,item_name,quantity_formula').in('cost_code', codes);
   if (error) throw new Error('Supabase read failed: ' + error.message);
   const byCode = {};
-  (data || []).forEach(r => { byCode[r.cost_code] = r.quantity_formula; });
+  (data || []).forEach(r => { byCode[r.cost_code] = r; });
 
   const c = {
     I13: totalAreaSum(jq),
@@ -1269,11 +1324,19 @@ async function computeCellsFromSupabase(neededRows) {
     I18: jq.exterior_doors || 0, I19: jq.windows || 0, I23: jq.staircases || 0,
     I24: jq.porch_columns || 0, I26: jq.interior_doors || 0
   };
+  const badFormulas = [];
   neededRows.forEach(row => {
-    const formula = byCode[String(row)];
-    if (formula === undefined) throw new Error('cost_items row ' + row + ' not found in Supabase — refusing to guess a quantity.');
-    c['D' + row] = evaluateQuantityFormula(formula, jq);
+    const item = byCode[String(row)];
+    if (item === undefined) throw new Error('cost_items row ' + row + ' not found in Supabase — refusing to guess a quantity.');
+    const check = validateQuantityFormula(item.quantity_formula);
+    const qty = evaluateQuantityFormula(item.quantity_formula, jq);
+    console.log('[Supabase estimate] row ' + row + ' "' + item.item_name + '": formula="' + item.quantity_formula + '" valid=' + check.valid + (check.valid ? '' : ' (' + check.reason + ')') + ' -> quantity=' + qty);
+    if (!check.valid) badFormulas.push(row + ' "' + item.item_name + '": ' + item.quantity_formula + ' — ' + check.reason);
+    c['D' + row] = qty;
   });
+  if (badFormulas.length) {
+    throw new Error('Supabase has ' + badFormulas.length + ' cost item(s) with a formula this calculator can\'t read (likely the pre-migration format, never re-synced — see console for full list):\n' + badFormulas.join('\n'));
+  }
   return c;
 }
 
@@ -1297,7 +1360,6 @@ async function lookupSiteOptionCost(category, optionLabel) {
 
 // ── Cell Map (matches extension background.js CELL_MAP) ──────────────────────
 const CELL_MAP = {
-  'basement':                 'I3',
   '1st floor':                'I4',
   '2nd floor':                'I5',
   '3rd floor':                'I6',
@@ -1322,7 +1384,7 @@ const CELL_MAP = {
 };
 
 const ZERO_RANGES = [
-  'I3','I4','I5','I6','I7','I8','I9','I10','I11','I12',
+  'I4','I5','I6','I7','I8','I9','I10','I11','I12',
   'I18','I19','I20','I21','I22','I23','I24','I25','I26','I27','I28'
 ];
 
@@ -1694,6 +1756,7 @@ btnGo.addEventListener('click', async () => {
 btnClear.addEventListener('click', () => {
   document.querySelectorAll('.f-input').forEach(i => i.value = '');
   document.querySelectorAll('.custom-input-name, .custom-input-desc, .custom-input-price').forEach(i => i.value = '');
+  ['basement-finished-sf','basement-finished-desc','basement-unfinished-sf','basement-unfinished-desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   planSelect.value = '';
   planStatusEl.textContent = '';
   planStatusEl.classList.add('hidden');
@@ -1823,6 +1886,23 @@ btnConfirm.addEventListener('click', async () => {
     if (customRowError) {
       showStatus(customRowError, 'error');
       return;
+    }
+
+    // Basement — priced separately (fixed cost + $/SF shell + $/SF finish-out,
+    // see computeBasementCosts), written as its own line item(s) under Custom
+    // Selection Allowances, same as any other custom item.
+    const basementFinishedSf = parseFloat(document.getElementById('basement-finished-sf').value) || 0;
+    const basementUnfinishedSf = parseFloat(document.getElementById('basement-unfinished-sf').value) || 0;
+    if (basementFinishedSf > 0 || basementUnfinishedSf > 0) {
+      const { data: pricingRows, error: pricingErr } = await sbClient.from('basement_pricing').select('*').eq('id', 1).single();
+      if (pricingErr || !pricingRows) { showStatus('Could not load basement pricing from Supabase: ' + (pricingErr ? pricingErr.message : 'not found'), 'error'); return; }
+      const basementCosts = computeBasementCosts(basementFinishedSf, basementUnfinishedSf, pricingRows);
+      if (basementCosts.unfinished !== null) {
+        customItems.push({ name: 'Unfinished Basement', description: (document.getElementById('basement-unfinished-desc').value || '').trim(), unitCost: basementCosts.unfinished });
+      }
+      if (basementCosts.finished !== null) {
+        customItems.push({ name: 'Finished Basement', description: (document.getElementById('basement-finished-desc').value || '').trim(), unitCost: basementCosts.finished });
+      }
     }
 
     // Collect site options directly from dropdowns — no sheet D-column read needed.
