@@ -1218,7 +1218,7 @@ const sbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SU
 // build step.
 // Row 3 (basement) is deliberately absent — basement is priced entirely by
 // its own dedicated Finished/Unfinished Basement lines (see
-// computeBasementCosts below), not folded into any cost item's quantity.
+// computeBasementLineItems below), not folded into any cost item's quantity.
 // Sheet cell I3 is no longer read or written anywhere in this file.
 const ROW_TO_FIELD = {
   4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
@@ -1233,18 +1233,24 @@ const TOTAL_AREA_ROWS = [4,5,6,7,8,9,10,11,12];
 
 // Basement pricing — a fixed cost plus two flat $/SF rates, not part of
 // the quantity_formula/cost_items system (see 04_basement_pricing.sql).
-// Fixed cost is claimed by Unfinished whenever present; Finished only
-// claims it for a finished-only basement (no unfinished SF in the job).
-function computeBasementCosts(finishedSf, unfinishedSf, pricing) {
-  const result = { unfinished: null, finished: null };
+// Returns an array of BuilderTrend line items, each with its own unit cost
+// AND quantity (quantity = the actual SF), instead of one collapsed dollar
+// total at quantity 1:
+//   - "Basement Fixed Cost" (qty 1) — once, whenever any basement SF is present.
+//   - "Unfinished Basement" (qty = unfinishedSf, unit cost = shell $/SF only)
+//   - "Finished Basement" (qty = finishedSf, unit cost = shell + finish $/SF)
+function computeBasementLineItems(finishedSf, unfinishedSf, pricing) {
+  const items = [];
+  if (finishedSf > 0 || unfinishedSf > 0) {
+    items.push({ name: 'Basement Fixed Cost', unitCost: pricing.fixed_cost_per_house, quantity: 1 });
+  }
   if (unfinishedSf > 0) {
-    result.unfinished = pricing.fixed_cost_per_house + unfinishedSf * pricing.shell_cost_per_sf;
+    items.push({ name: 'Unfinished Basement', unitCost: pricing.shell_cost_per_sf, quantity: unfinishedSf });
   }
   if (finishedSf > 0) {
-    const fixedShare = unfinishedSf > 0 ? 0 : pricing.fixed_cost_per_house;
-    result.finished = fixedShare + finishedSf * pricing.shell_cost_per_sf + finishedSf * pricing.finish_cost_per_sf;
+    items.push({ name: 'Finished Basement', unitCost: pricing.shell_cost_per_sf + pricing.finish_cost_per_sf, quantity: finishedSf });
   }
-  return result;
+  return items;
 }
 function totalAreaSum(jq) {
   return TOTAL_AREA_ROWS.reduce((sum, row) => sum + (Number(jq[ROW_TO_FIELD[row]]) || 0), 0);
@@ -1889,19 +1895,36 @@ btnConfirm.addEventListener('click', async () => {
     }
 
     // Basement — priced separately (fixed cost + $/SF shell + $/SF finish-out,
-    // see computeBasementCosts), written as its own line item(s) under Custom
-    // Selection Allowances, same as any other custom item.
+    // see computeBasementLineItems), written as its own line item(s) under
+    // Custom Selection Allowances, same as any other custom item — but each
+    // with its own unit cost AND quantity (SF), not one collapsed dollar
+    // total at quantity 1.
     const basementFinishedSf = parseFloat(document.getElementById('basement-finished-sf').value) || 0;
     const basementUnfinishedSf = parseFloat(document.getElementById('basement-unfinished-sf').value) || 0;
     if (basementFinishedSf > 0 || basementUnfinishedSf > 0) {
       const { data: pricingRows, error: pricingErr } = await sbClient.from('basement_pricing').select('*').eq('id', 1).single();
       if (pricingErr || !pricingRows) { showStatus('Could not load basement pricing from Supabase: ' + (pricingErr ? pricingErr.message : 'not found'), 'error'); return; }
-      const basementCosts = computeBasementCosts(basementFinishedSf, basementUnfinishedSf, pricingRows);
-      if (basementCosts.unfinished !== null) {
-        customItems.push({ name: 'Unfinished Basement', description: (document.getElementById('basement-unfinished-desc').value || '').trim(), unitCost: basementCosts.unfinished });
-      }
-      if (basementCosts.finished !== null) {
-        customItems.push({ name: 'Finished Basement', description: (document.getElementById('basement-finished-desc').value || '').trim(), unitCost: basementCosts.finished });
+      const basementDescByName = {
+        'Unfinished Basement': (document.getElementById('basement-unfinished-desc').value || '').trim(),
+        'Finished Basement': (document.getElementById('basement-finished-desc').value || '').trim()
+      };
+      const basementLineItems = computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows);
+      basementLineItems.forEach(li => {
+        customItems.push({ name: li.name, description: basementDescByName[li.name] || '', unitCost: li.unitCost, quantity: li.quantity });
+      });
+
+      // Record the combined basement SF (B5) and grand total dollar cost (B6,
+      // sum of the same line items just written to BuilderTrend) in the
+      // Sheet's Additional Pricing tab — informational only, not read back
+      // by any calculation.
+      const basementGrandTotal = basementLineItems.reduce((sum, li) => sum + li.unitCost * li.quantity, 0);
+      try {
+        await sheetsWriteTab('ADDITIONAL PRICING', [
+          { range: 'B5', value: basementFinishedSf + basementUnfinishedSf },
+          { range: 'B6', value: basementGrandTotal }
+        ]);
+      } catch (e) {
+        console.log('Could not write basement totals to Additional Pricing tab: ' + e.message);
       }
     }
 
