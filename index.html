@@ -908,6 +908,8 @@
       <div class="card">
         <div class="section-label">Building Areas <span>Square Feet</span></div>
 
+        <div class="f-row"><span class="f-label">Basement</span>
+          <input class="f-input" type="number" data-key="basement" placeholder="0" min="0"></div>
         <div class="f-row"><span class="f-label">1st Floor</span>
           <input class="f-input" type="number" data-key="1st floor" placeholder="0" min="0"></div>
         <div class="f-row"><span class="f-label">2nd Floor</span>
@@ -978,19 +980,6 @@
         <button id="calc-history-btn" type="button" class="calc-history-btn">▾ History</button>
         <div id="calc-history-drop" class="calc-history-drop" style="display:none;"></div>
       </div>
-    </div>
-
-    <!-- ── Basement — priced separately, not part of the standard cost items ── -->
-    <div class="card">
-      <div class="section-label">Basement <span>Priced separately — becomes its own line item(s)</span></div>
-      <div class="f-row"><span class="f-label">Finished Basement (SF)</span>
-        <input type="number" id="basement-finished-sf" placeholder="0" min="0"></div>
-      <div class="f-row"><span class="f-label">Finished Basement Description</span>
-        <input type="text" id="basement-finished-desc" placeholder="Description…"></div>
-      <div class="f-row"><span class="f-label">Unfinished Basement (SF)</span>
-        <input type="number" id="basement-unfinished-sf" placeholder="0" min="0"></div>
-      <div class="f-row"><span class="f-label">Unfinished Basement Description</span>
-        <input type="text" id="basement-unfinished-desc" placeholder="Description…"></div>
     </div>
 
     <!-- ── Custom Selection Allowances ── -->
@@ -1216,12 +1205,8 @@ const sbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SU
 // KeelEZEstimateExtensionV1/supabase-migration/calc-engine.js — these two
 // copies are kept in sync by hand since the two projects don't share a
 // build step.
-// Row 3 (basement) is deliberately absent — basement is priced entirely by
-// its own dedicated Finished/Unfinished Basement lines (see
-// computeBasementCosts below), not folded into any cost item's quantity.
-// Sheet cell I3 is no longer read or written anywhere in this file.
 const ROW_TO_FIELD = {
-  4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
+  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
   7: 'attic_storage_sf', 8: 'habitable_attic_sf',
   9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
   18: 'exterior_doors', 19: 'windows', 20: 'baths',
@@ -1229,49 +1214,11 @@ const ROW_TO_FIELD = {
   24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
   27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
 };
-const TOTAL_AREA_ROWS = [4,5,6,7,8,9,10,11,12];
-
-// Basement pricing — a fixed cost plus two flat $/SF rates, not part of
-// the quantity_formula/cost_items system (see 04_basement_pricing.sql).
-// Fixed cost is claimed by Unfinished whenever present; Finished only
-// claims it for a finished-only basement (no unfinished SF in the job).
-function computeBasementCosts(finishedSf, unfinishedSf, pricing) {
-  const result = { unfinished: null, finished: null };
-  if (unfinishedSf > 0) {
-    result.unfinished = pricing.fixed_cost_per_house + unfinishedSf * pricing.shell_cost_per_sf;
-  }
-  if (finishedSf > 0) {
-    const fixedShare = unfinishedSf > 0 ? 0 : pricing.fixed_cost_per_house;
-    result.finished = fixedShare + finishedSf * pricing.shell_cost_per_sf + finishedSf * pricing.finish_cost_per_sf;
-  }
-  return result;
-}
+const TOTAL_AREA_ROWS = [3,4,5,6,7,8,9,10,11,12];
 function totalAreaSum(jq) {
   return TOTAL_AREA_ROWS.reduce((sum, row) => sum + (Number(jq[ROW_TO_FIELD[row]]) || 0), 0);
 }
 const CELL_REF_RE = /\$?I\$?(\d+)/g;
-const KNOWN_ROWS = Object.keys(ROW_TO_FIELD).map(Number);
-// Confirms a formula is one of the 4 confirmed-safe Sheet formula patterns
-// (see calc-engine.js). If Supabase still has an OLD-format formula (e.g.
-// "floor1_sf+floor2_sf" from before this project switched to storing the
-// literal Sheet formula text), this catches it here with a clear error
-// instead of evaluateQuantityFormula silently returning 0.
-function validateQuantityFormula(formula) {
-  const f = (formula || '').trim();
-  if (f === '') return { valid: false, reason: 'empty formula' };
-  if (!f.startsWith('=')) return isFinite(Number(f)) ? { valid: true } : { valid: false, reason: 'does not start with "=" and is not a plain number — looks like an OLD-format formula (e.g. "floor1_sf+floor2_sf") that was never re-migrated to the new literal Sheet-formula format' };
-  const body = f.slice(1);
-  CELL_REF_RE.lastIndex = 0;
-  const refs = body.match(CELL_REF_RE);
-  if (!refs) return { valid: false, reason: 'no $I$N / IN references found' };
-  const stripped = body.replace(/\s+/g, '');
-  if (stripped !== refs.join('+')) return { valid: false, reason: 'contains something other than a "+"-joined chain of references' };
-  for (const ref of refs) {
-    const rowNum = parseInt(ref.match(/(\d+)/)[0], 10);
-    if (rowNum !== 13 && !KNOWN_ROWS.includes(rowNum)) return { valid: false, reason: 'references unknown row ' + rowNum };
-  }
-  return { valid: true };
-}
 function evaluateQuantityFormula(formula, jq) {
   const f = (formula || '').trim();
   if (f === '') return 0;
@@ -1310,13 +1257,11 @@ function buildJobQuantitiesFromInputs() {
 // KeelEZEstimateExtensionV1/supabase-migration/verify-calc-engine.js.
 async function computeCellsFromSupabase(neededRows) {
   const jq = buildJobQuantitiesFromInputs();
-  console.log('[Supabase estimate] job quantities read from the form:', jq);
-
   const codes = neededRows.map(String);
-  const { data, error } = await sbClient.from('cost_items').select('cost_code,item_name,quantity_formula').in('cost_code', codes);
+  const { data, error } = await sbClient.from('cost_items').select('cost_code,quantity_formula').in('cost_code', codes);
   if (error) throw new Error('Supabase read failed: ' + error.message);
   const byCode = {};
-  (data || []).forEach(r => { byCode[r.cost_code] = r; });
+  (data || []).forEach(r => { byCode[r.cost_code] = r.quantity_formula; });
 
   const c = {
     I13: totalAreaSum(jq),
@@ -1324,19 +1269,11 @@ async function computeCellsFromSupabase(neededRows) {
     I18: jq.exterior_doors || 0, I19: jq.windows || 0, I23: jq.staircases || 0,
     I24: jq.porch_columns || 0, I26: jq.interior_doors || 0
   };
-  const badFormulas = [];
   neededRows.forEach(row => {
-    const item = byCode[String(row)];
-    if (item === undefined) throw new Error('cost_items row ' + row + ' not found in Supabase — refusing to guess a quantity.');
-    const check = validateQuantityFormula(item.quantity_formula);
-    const qty = evaluateQuantityFormula(item.quantity_formula, jq);
-    console.log('[Supabase estimate] row ' + row + ' "' + item.item_name + '": formula="' + item.quantity_formula + '" valid=' + check.valid + (check.valid ? '' : ' (' + check.reason + ')') + ' -> quantity=' + qty);
-    if (!check.valid) badFormulas.push(row + ' "' + item.item_name + '": ' + item.quantity_formula + ' — ' + check.reason);
-    c['D' + row] = qty;
+    const formula = byCode[String(row)];
+    if (formula === undefined) throw new Error('cost_items row ' + row + ' not found in Supabase — refusing to guess a quantity.');
+    c['D' + row] = evaluateQuantityFormula(formula, jq);
   });
-  if (badFormulas.length) {
-    throw new Error('Supabase has ' + badFormulas.length + ' cost item(s) with a formula this calculator can\'t read (likely the pre-migration format, never re-synced — see console for full list):\n' + badFormulas.join('\n'));
-  }
   return c;
 }
 
@@ -1360,6 +1297,7 @@ async function lookupSiteOptionCost(category, optionLabel) {
 
 // ── Cell Map (matches extension background.js CELL_MAP) ──────────────────────
 const CELL_MAP = {
+  'basement':                 'I3',
   '1st floor':                'I4',
   '2nd floor':                'I5',
   '3rd floor':                'I6',
@@ -1384,7 +1322,7 @@ const CELL_MAP = {
 };
 
 const ZERO_RANGES = [
-  'I4','I5','I6','I7','I8','I9','I10','I11','I12',
+  'I3','I4','I5','I6','I7','I8','I9','I10','I11','I12',
   'I18','I19','I20','I21','I22','I23','I24','I25','I26','I27','I28'
 ];
 
@@ -1756,7 +1694,6 @@ btnGo.addEventListener('click', async () => {
 btnClear.addEventListener('click', () => {
   document.querySelectorAll('.f-input').forEach(i => i.value = '');
   document.querySelectorAll('.custom-input-name, .custom-input-desc, .custom-input-price').forEach(i => i.value = '');
-  ['basement-finished-sf','basement-finished-desc','basement-unfinished-sf','basement-unfinished-desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   planSelect.value = '';
   planStatusEl.textContent = '';
   planStatusEl.classList.add('hidden');
@@ -1888,23 +1825,6 @@ btnConfirm.addEventListener('click', async () => {
       return;
     }
 
-    // Basement — priced separately (fixed cost + $/SF shell + $/SF finish-out,
-    // see computeBasementCosts), written as its own line item(s) under Custom
-    // Selection Allowances, same as any other custom item.
-    const basementFinishedSf = parseFloat(document.getElementById('basement-finished-sf').value) || 0;
-    const basementUnfinishedSf = parseFloat(document.getElementById('basement-unfinished-sf').value) || 0;
-    if (basementFinishedSf > 0 || basementUnfinishedSf > 0) {
-      const { data: pricingRows, error: pricingErr } = await sbClient.from('basement_pricing').select('*').eq('id', 1).single();
-      if (pricingErr || !pricingRows) { showStatus('Could not load basement pricing from Supabase: ' + (pricingErr ? pricingErr.message : 'not found'), 'error'); return; }
-      const basementCosts = computeBasementCosts(basementFinishedSf, basementUnfinishedSf, pricingRows);
-      if (basementCosts.unfinished !== null) {
-        customItems.push({ name: 'Unfinished Basement', description: (document.getElementById('basement-unfinished-desc').value || '').trim(), unitCost: basementCosts.unfinished });
-      }
-      if (basementCosts.finished !== null) {
-        customItems.push({ name: 'Finished Basement', description: (document.getElementById('basement-finished-desc').value || '').trim(), unitCost: basementCosts.finished });
-      }
-    }
-
     // Collect site options directly from dropdowns — no sheet D-column read needed.
     // Row numbers match SITE OPTIONS sheet rows for column C pricing lookup.
     const SITE_DROPDOWN_MAP = {
@@ -2007,4 +1927,456 @@ btnCopyScript.addEventListener('click', async () => {
     setTimeout(() => copyConfirm.classList.remove('show'), 2500);
   } catch(_) {
     // Fallback
-    const sel 
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(scriptBox);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('copy');
+    sel.removeAllRanges();
+    copyConfirm.classList.add('show');
+    setTimeout(() => copyConfirm.classList.remove('show'), 2500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Automation script builder
+// Generates a self-contained IIFE with the items baked in —
+// paste into Chrome DevTools console on the BuilderTrend
+// Estimate page and press Enter.
+// ═══════════════════════════════════════════════════════════
+function buildAutomationScript(items, customItems) {
+  const itemsJSON  = JSON.stringify(items);
+  const customJSON = JSON.stringify(customItems || []);
+  return `(async function() {
+  var items = ${itemsJSON};
+  var customItems = ${customJSON};
+  var _delay = ms => new Promise(r => setTimeout(r, ms));
+  function reactSet(inp, val) {
+    var s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    s.call(inp, String(val));
+    inp.dispatchEvent(new Event('input',  { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function waitModalClose(max) {
+    return new Promise(res => {
+      var t = performance.now(), iv = setInterval(() => {
+        var m = document.querySelector('.ant-modal-wrap,.ant-modal-root,[class*="modal"][class*="show"]');
+        if (!m || performance.now()-t >= (max||2000)) { clearInterval(iv); res(); }
+      }, 50);
+    });
+  }
+  function isGroupHeader(n) {
+    var c = n.className||'';
+    if (c.includes('proposalFormatGroupCellTitle')||c.includes('proposalFormatGroupCellTitleReadonly')) return true;
+    var p = n.parentElement;
+    while (p && p !== document.body) {
+      var pc = p.className||'';
+      if (pc.includes('WorksheetGroupCellActions')||pc.includes('proposalFormatGroupCell')) return true;
+      p = p.parentElement;
+    }
+    return false;
+  }
+  async function setQty(name, qty, isUnitCost) {
+    var needle = name.toLowerCase(), words = needle.split(/\\s+/).filter(Boolean);
+    var si = null;
+    for (var wi = 0; wi < 20; wi++) {
+      si = document.getElementById('rc_select_17') || document.getElementById('rc_select_1');
+      if (!si) {
+        var cb = Array.from(document.querySelectorAll('button')).find(b => b.textContent&&b.textContent.includes('Collapse all'));
+        if (cb) { var p = cb.closest('[class*="header"],[class*="control"],div'); if (p) si = p.querySelector('input[role="combobox"].ant-select-selection-search-input'); }
+      }
+      if (!si) { var cc = Array.from(document.querySelectorAll('input[role="combobox"].ant-select-selection-search-input')).filter(e => { var id=e.id||''; return id&&id.startsWith('rc_select_')&&id!=='rc_select_0'&&id!=='savedFilterDropdown'; }); si = cc[0]; }
+      if (si) break; await _delay(100);
+    }
+    if (!si) { console.log('✗',name,'— search bar not found'); return; }
+    var con = si.closest('.ant-select-selector')||si.parentElement;
+    if (con) { con.click(); await _delay(200); }
+    si.focus(); await _delay(100);
+    var ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    ns.call(si, name);
+    si.dispatchEvent(new Event('input',{bubbles:true}));
+    si.dispatchEvent(new Event('change',{bubbles:true}));
+    await _delay(500);
+    var opts = document.querySelectorAll('.LineItemResult.LineItem'), clicked = false;
+    for (var o = 0; o < opts.length; o++) {
+      var ot = (opts[o].innerText||'').trim().toLowerCase();
+      if (words.every(w => ot.includes(w))) { opts[o].dispatchEvent(new MouseEvent('mousedown',{bubbles:true})); opts[o].dispatchEvent(new MouseEvent('mouseup',{bubbles:true})); opts[o].click(); clicked=true; break; }
+    }
+    if (!clicked) { console.log('○',name,'— not in dropdown'); return; }
+    var el = null;
+    for (var a = 0; a < 15; a++) {
+      var vds = document.querySelectorAll('.ValueDisplay');
+      for (var v = 0; v < vds.length; v++) { if (!vds[v].offsetHeight||isGroupHeader(vds[v])) continue; if ((vds[v].innerText||'').trim().toLowerCase()===needle) { el=vds[v]; break; } }
+      if (!el) for (var v2 = 0; v2 < vds.length; v2++) { if (!vds[v2].offsetHeight||isGroupHeader(vds[v2])) continue; var t=(vds[v2].innerText||'').trim().toLowerCase(); if (words.every(w=>t.includes(w))) { el=vds[v2]; break; } }
+      if (el) break; await _delay(100);
+    }
+    if (!el) { console.log('○',name,'— ValueDisplay not found'); return; }
+    el.scrollIntoView({behavior:'instant',block:'center'}); await _delay(300);
+    el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+    el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+    el.click(); await _delay(400);
+    var qi = null;
+    if (isUnitCost) qi = document.querySelector('input[data-testid="unitCost"],input#unitCost');
+    if (!qi) qi = document.querySelector('input[role="spinbutton"].ant-input-number-input,input[role="spinbutton"],input.ant-input-number-input');
+    if (!qi) { console.log('○',name,'— qty input not found'); return; }
+    qi.focus(); await _delay(150);
+    qi.select();
+    qi.dispatchEvent(new KeyboardEvent('keydown',{key:'a',keyCode:65,ctrlKey:true,bubbles:true}));
+    await _delay(50);
+    qi.dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',keyCode:46,bubbles:true}));
+    reactSet(qi,''); qi.dispatchEvent(new Event('input',{bubbles:true})); await _delay(100);
+    var vs = String(Math.round(qty*100)/100), s2 = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    for (var ci = 0; ci < vs.length; ci++) { var ch=vs[ci],code=ch.charCodeAt(0); qi.dispatchEvent(new KeyboardEvent('keydown',{key:ch,keyCode:code,bubbles:true})); qi.dispatchEvent(new KeyboardEvent('keypress',{key:ch,keyCode:code,bubbles:true})); s2.call(qi,vs.slice(0,ci+1)); qi.dispatchEvent(new Event('input',{bubbles:true})); qi.dispatchEvent(new KeyboardEvent('keyup',{key:ch,keyCode:code,bubbles:true})); await _delay(20); }
+    await _delay(200);
+    var sb = document.querySelector('[data-testid="saveButton"],#saveButton');
+    if (!sb) { for (var si2=0;si2<15;si2++) { await _delay(100); sb=document.querySelector('[data-testid="saveButton"],#saveButton'); if(sb) break; } }
+    if (sb) { sb.click(); await waitModalClose(2000); } else { qi.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true})); await _delay(500); }
+    console.log('✓',name,'→',qty);
+  }
+  async function createLineItem(title, unitCost) {
+    // Find the Custom Selection Allowances group header element
+    var grpEl = null;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    var node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue && node.nodeValue.trim() === 'Custom Selection Allowances' && node.parentElement.offsetHeight) {
+        grpEl = node.parentElement; break;
+      }
+    }
+    if (!grpEl) { console.log('✗ createLineItem: Custom Selection Allowances group not found'); return; }
+
+    // Walk up to find the group container, then find the + button inside it
+    var plusBtn = null;
+    var p = grpEl;
+    for (var pi = 0; pi < 12 && p && p !== document.body; pi++) {
+      var candidate = p.querySelector('button svg path[d^="M17 5"]');
+      if (candidate) { plusBtn = candidate.closest('button'); break; }
+      p = p.parentElement;
+    }
+    if (!plusBtn) { console.log('✗ createLineItem: + button not found'); return; }
+
+    // Snapshot existing title input IDs so we can detect the new one
+    var existingIds = new Set(Array.from(document.querySelectorAll('[data-testid*="itemTitle"]')).map(e => e.id));
+
+    // Click the + button
+    plusBtn.click();
+    await _delay(500);
+
+    // Click "Item" in the dropdown
+    var itemOpt = Array.from(document.querySelectorAll('.ant-dropdown-menu-title-content')).find(el => (el.textContent||'').trim() === 'Item');
+    if (!itemOpt) { console.log('✗ createLineItem: Item option not found in dropdown'); return; }
+    itemOpt.click();
+    await _delay(700);
+
+    // Wait for the new title input to appear
+    var newTitle = null;
+    for (var a = 0; a < 25; a++) {
+      var all = document.querySelectorAll('[data-testid*="itemTitle"]');
+      for (var t = 0; t < all.length; t++) { if (!existingIds.has(all[t].id)) { newTitle = all[t]; break; } }
+      if (newTitle) break;
+      await _delay(150);
+    }
+    if (!newTitle) { console.log('✗ createLineItem: new title input not found'); return; }
+
+    // Fill title
+    var ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    newTitle.focus(); await _delay(100);
+    ns.call(newTitle, title);
+    newTitle.dispatchEvent(new Event('input',{bubbles:true}));
+    newTitle.dispatchEvent(new Event('change',{bubbles:true}));
+    await _delay(200);
+
+    // Derive sibling input IDs from the title input's ID
+    var keyBase = newTitle.id.replace(/\\.itemTitle$/, '');
+    var ccInput = document.querySelector('[id="' + keyBase + '.costCodeId"]');
+    if (ccInput) {
+      ccInput.focus(); await _delay(100);
+      ns.call(ccInput, 'Custom Selection Allowances');
+      ccInput.dispatchEvent(new Event('input',{bubbles:true}));
+      ccInput.dispatchEvent(new Event('change',{bubbles:true}));
+      await _delay(600);
+      var ccOpt = Array.from(document.querySelectorAll('.ant-select-item-option-content')).find(el => (el.textContent||'').trim() === 'Custom Selection Allowances');
+      if (ccOpt) { ccOpt.click(); await _delay(400); }
+    }
+
+    var ucInput = document.querySelector('[data-testid="' + keyBase + '.unitCost"]') ||
+                  document.querySelector('[id="' + keyBase + '.unitCost"]');
+    if (ucInput) {
+      ucInput.focus(); await _delay(100);
+      ucInput.select();
+      ns.call(ucInput, String(unitCost));
+      ucInput.dispatchEvent(new Event('input',{bubbles:true}));
+      ucInput.dispatchEvent(new Event('change',{bubbles:true}));
+      await _delay(200);
+    }
+
+    // Click left margin to save / close the inline editor
+    var saveX = Math.max(1, (document.querySelector('.ant-layout-sider,aside')||document.body).getBoundingClientRect().right + 5 || 10);
+    document.elementFromPoint(saveX, window.innerHeight / 2).dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:saveX,clientY:window.innerHeight/2}));
+    await _delay(100);
+    document.elementFromPoint(saveX, window.innerHeight / 2).dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:saveX,clientY:window.innerHeight/2}));
+    await _delay(800);
+    console.log('✓ Created custom item:', title, '→ $' + unitCost);
+  }
+
+  console.log('EZEstimate — starting Write to Estimate (' + items.length + ' items)');
+  for (var i = 0; i < items.length; i++) await setQty(items[i].name, items[i].qty, items[i].isUnitCost);
+  await _delay(1500);
+  var fs = document.querySelector('.BTGridFooterCell--ellipsis span[dir="ltr"]'), tv = 0;
+  if (fs) { var fm = (fs.innerText||'').trim().match(/^\\$([\\d,]+\\.?\\d*)$/); if (fm) tv = parseFloat(fm[1].replace(/,/g,'')); }
+  if (tv > 0) { console.log('Grand total: $'+tv+' → Realtor Fees'); await setQty('Realtor Fees', tv, true); }
+  else console.warn('Could not detect grand total for Realtor Fees');
+  if (customItems.length) {
+    console.log('Creating ' + customItems.length + ' custom allowance item(s)…');
+    for (var ci = 0; ci < customItems.length; ci++) await createLineItem(customItems[ci].name, customItems[ci].unitCost);
+  }
+  console.log('✓ Write to Estimate complete');
+})();`;
+}
+
+// ── Sales Notes ─────────────────────────────────────────────────────────────
+(function() {
+  var notesEl = document.getElementById('sales-notes');
+  if (!notesEl) return;
+  try { notesEl.value = localStorage.getItem('keelSalesNotes') || ''; } catch(e) {}
+  notesEl.addEventListener('input', function() {
+    try { localStorage.setItem('keelSalesNotes', notesEl.value); } catch(e) {}
+  });
+  notesEl.addEventListener('keydown', function(e) {
+    if (e.key !== '-') return;
+    var pos = notesEl.selectionStart;
+    var text = notesEl.value;
+    var lineStart = text.lastIndexOf('\n', pos - 1) + 1;
+    if (pos === lineStart) {
+      e.preventDefault();
+      var before = text.slice(0, pos);
+      var after  = text.slice(notesEl.selectionEnd);
+      notesEl.value = before + '• ' + after;
+      notesEl.selectionStart = notesEl.selectionEnd = pos + 2;
+      try { localStorage.setItem('keelSalesNotes', notesEl.value); } catch(e) {}
+    }
+  });
+  window.parseSalesNotes = function() {
+    var lines = (notesEl.value || '').split('\n');
+    var bullets = [], plain = [];
+    lines.forEach(function(line) {
+      if (line.startsWith('• ')) bullets.push(line.slice(2).trim());
+      else if (line.trim()) plain.push(line.trim());
+    });
+    return { bullets: bullets, plain: plain, all: lines.filter(function(l){ return l.trim(); }) };
+  };
+})();
+
+// Arrow key navigation on number inputs
+document.addEventListener('keydown', function(e) {
+  if (!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) return;
+  var active = document.activeElement;
+  if (!active || !active.classList.contains('f-input')) return;
+  var inputs = Array.from(document.querySelectorAll('.f-input'));
+  var idx = inputs.indexOf(active);
+  if (idx === -1) return;
+
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    var cur = parseFloat(active.value) || 0;
+    active.value = e.key === 'ArrowUp' ? cur + 1 : Math.max(0, cur - 1);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    var prev = (idx - 1 + inputs.length) % inputs.length;
+    inputs[prev].focus();
+    inputs[prev].select();
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    var next = (idx + 1) % inputs.length;
+    inputs[next].focus();
+    inputs[next].select();
+  }
+});
+// ── Arrow key navigation on number inputs ────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) return;
+  var active = document.activeElement;
+  if (!active || !active.classList.contains('f-input')) return;
+  var inputs = Array.from(document.querySelectorAll('.f-input'));
+  var idx = inputs.indexOf(active);
+  if (idx === -1) return;
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    var cur = parseFloat(active.value) || 0;
+    active.value = e.key === 'ArrowUp' ? cur + 1 : Math.max(0, cur - 1);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    inputs[(idx - 1 + inputs.length) % inputs.length].focus();
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    inputs[(idx + 1) % inputs.length].focus();
+  }
+});
+
+// ── Calculator (same math parser + history behavior as the extension's
+// panel calculator, ported here since a plain webpage has no
+// chrome.storage — uses localStorage instead) ──────────────────────────
+(function() {
+  var CALC_STORAGE_KEY = 'keelCalcHistory';
+  var EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
+  var calcHistory = [];
+
+  var calcInput  = document.getElementById('calc-input');
+  var calcResult = document.getElementById('calc-result');
+  var histBtn    = document.getElementById('calc-history-btn');
+  var histDrop   = document.getElementById('calc-history-drop');
+  if (!calcInput) return;
+
+  function parseMath(str) {
+    var s = str.replace(/^\s*=\s*/, '').trim();
+    var pos = 0;
+    function ws()  { while (pos < s.length && s[pos] === ' ') pos++; }
+    function parseExpr()   { return parseAddSub(); }
+    function parseAddSub() {
+      var v = parseMulDiv(); ws();
+      while (pos < s.length && (s[pos] === '+' || s[pos] === '-')) {
+        var op = s[pos++]; v = op === '+' ? v + parseMulDiv() : v - parseMulDiv(); ws();
+      }
+      return v;
+    }
+    function parseMulDiv() {
+      var v = parsePow(); ws();
+      while (pos < s.length && (s[pos] === '*' || s[pos] === '/' || s[pos] === '%')) {
+        var op = s[pos++]; var r = parsePow();
+        v = op === '*' ? v * r : op === '/' ? v / r : v % r; ws();
+      }
+      return v;
+    }
+    function parsePow() {
+      var v = parseUnary(); ws();
+      if (pos < s.length && s[pos] === '^') { pos++; v = Math.pow(v, parseUnary()); }
+      return v;
+    }
+    function parseUnary() {
+      ws();
+      if (pos < s.length && s[pos] === '-') { pos++; return -parseAtom(); }
+      if (pos < s.length && s[pos] === '+') { pos++; return parseAtom(); }
+      return parseAtom();
+    }
+    function parseAtom() {
+      ws();
+      if (pos < s.length && s[pos] === '(') {
+        pos++; var v = parseExpr(); ws();
+        if (pos < s.length && s[pos] === ')') pos++;
+        return v;
+      }
+      var fnMatch = s.slice(pos).match(/^([A-Za-z_]\w*)\s*\(/);
+      if (fnMatch) {
+        var fname = fnMatch[1].toUpperCase(); pos += fnMatch[0].length;
+        var args = []; ws();
+        if (pos < s.length && s[pos] !== ')') {
+          args.push(parseExpr()); ws();
+          while (pos < s.length && (s[pos] === ',' || s[pos] === ';')) { pos++; args.push(parseExpr()); ws(); }
+        }
+        if (pos < s.length && s[pos] === ')') pos++;
+        switch (fname) {
+          case 'SQRT': return Math.sqrt(args[0]);
+          case 'ABS':  return Math.abs(args[0]);
+          case 'ROUND': return Math.round((args[0]||0) * Math.pow(10, args[1]||0)) / Math.pow(10, args[1]||0);
+          case 'INT':  return Math.trunc(args[0]);
+          case 'MAX':  return Math.max.apply(null, args);
+          case 'MIN':  return Math.min.apply(null, args);
+          case 'SUM':  return args.reduce(function(a,b){return a+b;}, 0);
+          case 'PI':   return Math.PI;
+          default: throw new Error('Unknown function: ' + fname);
+        }
+      }
+      var numRe = s.slice(pos).match(/^[0-9]*\.?[0-9]+/);
+      if (numRe) { pos += numRe[0].length; return parseFloat(numRe[0]); }
+      throw new Error('Unexpected: ' + (s[pos] || 'end'));
+    }
+    var result = parseExpr(); ws();
+    if (pos < s.length) throw new Error('Unexpected: ' + s[pos]);
+    if (!isFinite(result)) throw new Error('Result is not finite');
+    return result;
+  }
+
+  function tryEval(expr) {
+    if (!expr || !expr.trim()) return null;
+    try { return parseMath(expr); } catch(e) { return null; }
+  }
+
+  function saveHistory() {
+    try { localStorage.setItem(CALC_STORAGE_KEY, JSON.stringify(calcHistory)); } catch(e) {}
+  }
+
+  function loadHistory() {
+    try {
+      var now = Date.now();
+      var stored = JSON.parse(localStorage.getItem(CALC_STORAGE_KEY) || '[]');
+      calcHistory = stored.filter(function(h) { return (now - (h.ts || 0)) < EIGHT_HOURS_MS; });
+    } catch(e) { calcHistory = []; }
+  }
+
+  function commitCalc() {
+    var expr = (calcInput.value || '').trim().replace(/^\s*=\s*/, '');
+    if (!expr) return;
+    var val = tryEval(expr);
+    if (val === null) return;
+    var rounded = Math.round(val * 10000) / 10000;
+    if (calcHistory.length && calcHistory[0].expr === expr && calcHistory[0].val === rounded) return;
+    calcHistory.unshift({ expr: expr, val: rounded, ts: Date.now() });
+    if (calcHistory.length > 10) calcHistory.pop();
+    saveHistory();
+    renderHistory();
+  }
+
+  function updateLiveResult() {
+    var expr = (calcInput.value || '').trim();
+    if (!expr) { calcResult.textContent = ''; return; }
+    var val = tryEval(expr);
+    if (val !== null) {
+      calcResult.textContent = '= ' + (Math.round(val * 10000) / 10000);
+    } else {
+      calcResult.textContent = '';
+    }
+  }
+
+  function renderHistory() {
+    if (!histDrop) return;
+    histDrop.innerHTML = '';
+    if (!calcHistory.length) {
+      histDrop.innerHTML = '<div style="padding:6px 12px;font-size:11px;color:#94a3b8;">No history in the last 8 hours</div>';
+      return;
+    }
+    calcHistory.forEach(function(h) {
+      var item = document.createElement('div');
+      item.className = 'calc-history-item';
+      item.innerHTML = h.expr + ' = <b>' + h.val + '</b>';
+      item.addEventListener('click', function() {
+        calcInput.value = String(h.val);
+        updateLiveResult();
+        histDrop.style.display = 'none';
+      });
+      histDrop.appendChild(item);
+    });
+  }
+
+  loadHistory();
+
+  calcInput.addEventListener('input', updateLiveResult);
+  calcInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); commitCalc(); }
+  });
+  calcInput.addEventListener('blur', commitCalc);
+
+  if (histBtn) histBtn.addEventListener('click', function() {
+    renderHistory();
+    histDrop.style.display = histDrop.style.display === 'none' ? 'block' : 'none';
+  });
+  document.addEventListener('click', function(e) {
+    if (histDrop && !histDrop.contains(e.target) && e.target !== histBtn) {
+      histDrop.style.display = 'none';
+    }
+  }, { capture: true });
+})();
+</script>
+
+</body>
+</html>
