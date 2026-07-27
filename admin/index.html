@@ -133,6 +133,7 @@
     <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN SANIBEL', this)">2026 MASTER PLAN SANIBEL</div>
     <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN VERO', this)">2026 MASTER PLAN VERO</div>
     <div class="tab-item" onclick="switchSheetTab('SITE OPTIONS', this)">SITE OPTIONS</div>
+    <div class="tab-item" onclick="switchSheetTab('ADDITIONAL PRICING', this)">ADDITIONAL PRICING</div>
     <div class="tab-item" onclick="switchSheetTab('SALES NOTES', this)">SALES NOTES</div>
     <div class="tab-item" onclick="switchSheetTab('TEMPLATE', this)">TEMPLATE</div>
     <div class="tab-item" onclick="switchSheetTab('SALES VERSION', this)">SALES VERSION</div>
@@ -276,12 +277,13 @@ async function confirmEdit() {
     return;
   }
 
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf'];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
     payload['amount'] = (parseFloat(newVal) || 0) * targetQty;
   } else {
-    payload[col] = (col === 'amount' || col === 'quantity' || col === 'cost') ? parseFloat(newVal) || 0 : newVal;
+    payload[col] = NUMERIC_COLS.includes(col) ? parseFloat(newVal) || 0 : newVal;
   }
 
   const { error } = await sb.from(table).update(payload).eq('id', id);
@@ -322,6 +324,34 @@ async function loadSheetData() {
         <td colspan="2"><strong>${so.option_label}</strong></td>
         <td colspan="2">$${so.cost} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'cost', '${so.option_label}', 'Cost ($)', '=COST', '${so.cost}')">✏️</button></td>
         <td>${so.notes || ''} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'notes', '${so.option_label}', 'Notes', '', '${so.notes || ''}')">✏️</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    return;
+  }
+
+  if (activeTab === 'ADDITIONAL PRICING') {
+    const { data } = await sb.from('basement_pricing').select('*').eq('id', 1).single();
+    if (!data) return;
+    let rowIdx = 1;
+    let trHdr = document.createElement('tr');
+    trHdr.className = 'col-hdr';
+    trHdr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">BASEMENT PRICING</td>`;
+    tbody.appendChild(trHdr);
+
+    const fields = [
+      { key: 'fixed_cost_per_house', label: 'Fixed Cost Per House ($)' },
+      { key: 'shell_cost_per_sf',    label: 'Shell Cost Per SF ($)' },
+      { key: 'finish_cost_per_sf',   label: 'Finish Cost Per SF ($)' }
+    ];
+    fields.forEach(f => {
+      let tr = document.createElement('tr');
+      let currRow = rowIdx++;
+      tr.innerHTML = `
+        <td class="row-hdr" style="text-align:center;">${currRow}</td>
+        <td colspan="3"><strong>${f.label}</strong></td>
+        <td colspan="2">$${data[f.key]} <button class="pencil-btn" onclick="openEditModal('basement_pricing', ${data.id}, '${f.key}', '${f.label}', '${f.label}', '=${f.key.toUpperCase()}', '${data[f.key]}')">✏️</button></td>
+        <td></td>
       `;
       tbody.appendChild(tr);
     });
@@ -414,350 +444,4 @@ async function loadSheetData() {
 
     const currRow = rowIdx++;
 
-    const safeName  = (r.item_name || '').replace(/'/g, "\\'");
-    const safeBasis = (r.calc_basis || '').replace(/'/g, "\\'");
-    const safeQtyF  = (r.quantity_formula || '').replace(/'/g, "\\'");
-
-    let tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${currRow}</td>
-      <td onclick="selectCell('A${currRow}', '${r.cost_code || ''}')">${r.cost_code || ''}</td>
-      <td onclick="selectCell('B${currRow}', '${safeName}')"><strong>${r.item_name || ''}</strong></td>
-      <td onclick="selectCell('C${currRow}', '${safeBasis}')">
-        ${r.calc_basis || ''} 
-        <button class="pencil-btn" title="Edit Calc Basis" onclick="openEditModal('cost_items', ${r.id}, 'calc_basis', '${safeName}', 'Calc Basis', '${safeBasis}', '${safeBasis}')">✏️</button>
-      </td>
-      <td onclick="selectCell('D${currRow}', '${qtyFormulaStr.replace(/'/g, "\\'")}')">
-        ${qtyVal} 
-        <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\\'")}', '${safeQtyF}')">✏️</button>
-      </td>
-      <td onclick="selectCell('E${currRow}', '${amtFormulaStr.replace(/'/g, "\\'")}')">
-        ${formattedAmt} 
-        ${activeTab === '2026 CUSTOM PLAN' 
-          ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('custom_plan', ${r.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\\'")}', '${amtVal.toFixed(2)}')">✏️</button>`
-          : (houseRate ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('house_rates', ${houseRate.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\\'")}', '${amtVal}')">✏️</button>` : '')
-        }
-      </td>
-      <td onclick="selectCell('F${currRow}', '${unitFormulaStr.replace(/'/g, "\\'")}')">
-        ${formattedUnitCost} 
-        ${activeTab === '2026 CUSTOM PLAN'
-          ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="openEditModal('custom_plan', ${r.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>`
-          : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
-        }
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// Sync Changes to Sheets — mirrors supabase-migration/sync.js,
-// but runs entirely in-browser: Supabase writes go through the
-// same `sb` client already used above (RLS enforces who can write),
-// Sheets writes use a Google OAuth token from this same page
-// (reuses the exact Client ID + scope already approved for the
-// public KeelQuickQuote webpage — no new Google Cloud Console
-// setup needed since this page is hosted on the same origin).
-//
-// Safety gates carried over unchanged from sync.js:
-//   1. A formula is never written to the Sheet unless it matches
-//      one of the 4 confirmed-safe patterns (validateQuantityFormula).
-//   2. Every Sheet write is read back to confirm it landed correctly.
-//   3. Rows are matched by NAME text, never by position alone.
-//   4. Conflict rule: a local cache (browser localStorage, not the
-//      Node script's sync-state.json — these are two independent
-//      caches, each valid only against writes made through that
-//      same location) remembers each field's last-synced value.
-//      If only one side changed since then, sync auto-applies it.
-//      If BOTH changed to different values, it's flagged as a
-//      CONFLICT and never auto-resolved.
-// ═══════════════════════════════════════════════════════════
-
-const GOOGLE_CLIENT_ID = '453224496219-qbeam8al28h07q5fcppavmg95p66sjup.apps.googleusercontent.com';
-const SHEET_ID = '1iO37IiTagtu4OGEZSHA5C62tPRc5HOKMpq0UcsUI9ig';
-const CUSTOM_TAB = '2026 CUSTOM PLAN';
-const HOUSE_TABS = { kiawah: '2026 MASTER PLAN KIAWAH', sanibel: '2026 MASTER PLAN SANIBEL', vero: '2026 MASTER PLAN VERO' };
-const SITE_TAB = 'SITE OPTIONS';
-const SYNC_STATE_KEY = 'keelSyncState';
-
-let sheetsAccessToken = null;
-let pendingSyncPlan = null;
-
-// --- Formula validator — same 4 confirmed-safe patterns as calc-engine.js ---
-const CELL_REF_RE = /\$?I\$?(\d+)/g;
-const KNOWN_ROWS = [3,4,5,6,7,8,9,10,11,12,18,19,20,21,22,23,24,25,26,27,28,29];
-function validateQuantityFormula(formula) {
-  const f = (formula || '').trim();
-  if (f === '') return { valid: false, reason: 'empty formula' };
-  if (!f.startsWith('=')) return isFinite(Number(f)) ? { valid: true } : { valid: false, reason: 'not a number and not a formula' };
-  const body = f.slice(1);
-  const refs = body.match(CELL_REF_RE);
-  if (!refs) return { valid: false, reason: 'no recognized $I$N / IN references found' };
-  const rebuilt = refs.join('+');
-  const stripped = body.replace(/\s+/g, '');
-  if (stripped !== rebuilt) return { valid: false, reason: 'contains something other than a "+"-joined chain of references — refusing to sync' };
-  for (const ref of refs) {
-    const rowNum = parseInt(ref.match(/(\d+)/)[0], 10);
-    if (rowNum === 13) continue;
-    if (!KNOWN_ROWS.includes(rowNum)) return { valid: false, reason: 'reference to row ' + rowNum + ' is not a known measurement row' };
-  }
-  return { valid: true };
-}
-
-function getSheetsAccessToken() {
-  return new Promise((resolve, reject) => {
-    if (sheetsAccessToken) { resolve(sheetsAccessToken); return; }
-    if (!window.google || !google.accounts) { reject(new Error('Google Identity Services not loaded yet — try again in a moment.')); return; }
-    const tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      callback: (resp) => {
-        if (resp.error) { reject(new Error(resp.error)); return; }
-        sheetsAccessToken = resp.access_token;
-        resolve(sheetsAccessToken);
-      }
-    });
-    tokenClient.requestAccessToken();
-  });
-}
-
-async function sheetsGet(token, ranges) {
-  const q = ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&');
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values:batchGet?' + q + '&valueRenderOption=FORMULA', {
-    headers: { Authorization: 'Bearer ' + token }
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error('Sheets read failed: ' + JSON.stringify(body));
-  return body.valueRanges.map(vr => vr.values || []);
-}
-
-async function sheetsWriteOne(token, range, value) {
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values:batchUpdate', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: [{ range, values: [[value]] }] })
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error('Sheets write failed: ' + JSON.stringify(body));
-}
-
-function loadSyncState() {
-  try { return JSON.parse(localStorage.getItem(SYNC_STATE_KEY)) || { costFormulas: {}, houseRates: {}, siteOptions: {} }; }
-  catch (e) { return { costFormulas: {}, houseRates: {}, siteOptions: {} }; }
-}
-function saveSyncState(state) { localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(state)); }
-
-function decideSyncAction(lastSynced, supabaseVal, sheetVal) {
-  if (String(supabaseVal) === String(sheetVal)) return 'unchanged';
-  if (lastSynced === undefined) return 'push';
-  const supaChanged = String(lastSynced) !== String(supabaseVal);
-  const sheetChanged = String(lastSynced) !== String(sheetVal);
-  if (supaChanged && !sheetChanged) return 'push';
-  if (sheetChanged && !supaChanged) return 'pull';
-  return 'conflict';
-}
-
-function findRowByName(rows, name) {
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i][0] && String(rows[i][0]).trim() === name.trim()) return i;
-  }
-  return -1;
-}
-
-async function computeSyncPlan() {
-  const token = await getSheetsAccessToken();
-  const state = loadSyncState();
-  const pushes = [], pulls = [], conflicts = [];
-
-  const [{ data: costItems }, { data: houseRates }, { data: siteOptions }] = await Promise.all([
-    sb.from('cost_items').select('id,item_name,quantity_formula'),
-    sb.from('house_rates').select('cost_item_id,house,amount'),
-    sb.from('site_options').select('id,category,option_label,cost')
-  ]);
-
-  const ranges = [
-    `'${CUSTOM_TAB}'!B3:D100`,
-    `'${HOUSE_TABS.kiawah}'!B3:E100`,
-    `'${HOUSE_TABS.sanibel}'!B3:E100`,
-    `'${HOUSE_TABS.vero}'!B3:E100`,
-    `'${SITE_TAB}'!A2:C60`
-  ];
-  const [customRows, kiawahRows, sanibelRows, veroRows, siteRows] = await sheetsGet(token, ranges);
-  const houseRows = { kiawah: kiawahRows, sanibel: sanibelRows, vero: veroRows };
-
-  const itemById = {};
-  (costItems || []).forEach(c => { itemById[c.id] = c; });
-
-  // Cost item formulas vs Custom Plan column D
-  for (const item of (costItems || [])) {
-    const rowIdx = findRowByName(customRows, item.item_name);
-    if (rowIdx === -1) continue;
-    const sheetFormula = (customRows[rowIdx][2] || '').toString();
-    const key = item.item_name;
-    const action = decideSyncAction(state.costFormulas[key], item.quantity_formula, sheetFormula);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'formula', item: item.item_name, supabase: item.quantity_formula, sheet: sheetFormula }); continue; }
-    if (action === 'push') {
-      const check = validateQuantityFormula(item.quantity_formula);
-      if (!check.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name, reason: check.reason }); continue; }
-      pushes.push({ type: 'formula', item: item.item_name, range: `'${CUSTOM_TAB}'!D${rowIdx + 3}`, value: item.quantity_formula, stateKey: 'costFormulas', stateField: key });
-    } else {
-      const check = validateQuantityFormula(sheetFormula);
-      if (!check.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name, reason: 'sheet formula ' + sheetFormula + ' — ' + check.reason }); continue; }
-      pulls.push({ type: 'formula', costItemId: item.id, item: item.item_name, value: sheetFormula, stateKey: 'costFormulas', stateField: key });
-    }
-  }
-
-  // House rate amounts vs Master Plan tabs
-  for (const rate of (houseRates || [])) {
-    const ci = itemById[rate.cost_item_id];
-    if (!ci) continue;
-    const rowIdx = findRowByName(houseRows[rate.house], ci.item_name);
-    if (rowIdx === -1) continue;
-    const sheetAmount = Number(houseRows[rate.house][rowIdx][3]) || 0;
-    const key = ci.item_name + '::' + rate.house;
-    const action = decideSyncAction(state.houseRates[key], rate.amount, sheetAmount);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'amount', item: key, supabase: rate.amount, sheet: sheetAmount }); continue; }
-    if (action === 'push') pushes.push({ type: 'amount', item: key, range: `'${HOUSE_TABS[rate.house]}'!E${rowIdx + 3}`, value: rate.amount, stateKey: 'houseRates', stateField: key });
-    else pulls.push({ type: 'amount', costItemId: rate.cost_item_id, house: rate.house, item: key, value: sheetAmount, stateKey: 'houseRates', stateField: key });
-  }
-
-  // Site option costs vs SITE OPTIONS tab
-  for (const opt of (siteOptions || [])) {
-    let rowIdx = -1;
-    for (let i = 0; i < siteRows.length; i++) {
-      if (siteRows[i][1] && String(siteRows[i][1]).trim() === opt.option_label.trim() && siteRows[i][0] && String(siteRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
-    }
-    if (rowIdx === -1) continue;
-    const sheetCost = Number(siteRows[rowIdx][2]) || 0;
-    const key = opt.category + '::' + opt.option_label;
-    const action = decideSyncAction(state.siteOptions[key], opt.cost, sheetCost);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'site_cost', item: key, supabase: opt.cost, sheet: sheetCost }); continue; }
-    if (action === 'push') pushes.push({ type: 'site_cost', item: key, range: `'${SITE_TAB}'!C${rowIdx + 2}`, value: opt.cost, stateKey: 'siteOptions', stateField: key });
-    else pulls.push({ type: 'site_cost', siteOptionId: opt.id, item: key, value: sheetCost, stateKey: 'siteOptions', stateField: key });
-  }
-
-  return { token, state, pushes, pulls, conflicts };
-}
-
-async function syncChangesToSheets() {
-  const statusEl = document.getElementById('sync-status');
-  const modal = document.getElementById('sync-modal');
-  const body = document.getElementById('sync-modal-body');
-  const applyBtn = document.getElementById('sync-apply-btn');
-  statusEl.textContent = 'Checking for changes…';
-  try {
-    pendingSyncPlan = await computeSyncPlan();
-    const { pushes, pulls, conflicts } = pendingSyncPlan;
-    let html = '';
-    html += `<p><strong>${pushes.length}</strong> change(s) to push (Supabase → Sheet):</p><ul>` +
-      pushes.map(p => `<li>[${p.type}] ${p.item} → ${p.value}</li>`).join('') + '</ul>';
-    html += `<p><strong>${pulls.length}</strong> change(s) to pull (Sheet → Supabase):</p><ul>` +
-      pulls.map(p => `<li>[${p.type}] ${p.item} → ${p.value}</li>`).join('') + '</ul>';
-    html += `<p style="color:${conflicts.length ? '#d93025' : '#5f6368'};"><strong>${conflicts.length}</strong> conflict(s) — will NOT be auto-applied:</p><ul>` +
-      conflicts.map(c => `<li>${c.item} — Supabase=${c.supabase !== undefined ? c.supabase : ''} vs Sheet=${c.sheet !== undefined ? c.sheet : ''} ${c.reason || ''}</li>`).join('') + '</ul>';
-    if (pushes.length === 0 && pulls.length === 0) html += '<p>Nothing to sync — everything already matches.</p>';
-    body.innerHTML = html;
-    applyBtn.style.display = (pushes.length + pulls.length) > 0 ? 'inline-block' : 'none';
-    modal.classList.add('active');
-    statusEl.textContent = '';
-  } catch (e) {
-    statusEl.textContent = '';
-    alert('Sync check failed: ' + e.message);
-  }
-}
-
-async function applySyncChanges() {
-  if (!pendingSyncPlan) return;
-  const { token, state, pushes, pulls } = pendingSyncPlan;
-  const applyBtn = document.getElementById('sync-apply-btn');
-  applyBtn.disabled = true;
-  applyBtn.textContent = 'Applying…';
-  const results = [];
-
-  for (const push of pushes) {
-    try {
-      await sheetsWriteOne(token, push.range, push.type === 'formula' ? push.value : String(push.value));
-      const [confirm] = await sheetsGet(token, [push.range]);
-      const written = confirm[0] && confirm[0][0];
-      const ok = push.type === 'formula' ? String(written) === push.value : Number(written) === Number(push.value);
-      if (!ok) { results.push('FAILED verification: ' + push.item + ' (sheet shows ' + written + ')'); continue; }
-      state[push.stateKey][push.stateField] = push.value;
-      results.push('Pushed: ' + push.item);
-    } catch (e) { results.push('FAILED: ' + push.item + ' — ' + e.message); }
-  }
-
-  for (const pull of pulls) {
-    try {
-      let error;
-      if (pull.type === 'formula') ({ error } = await sb.from('cost_items').update({ quantity_formula: pull.value }).eq('id', pull.costItemId));
-      else if (pull.type === 'amount') ({ error } = await sb.from('house_rates').update({ amount: pull.value }).eq('cost_item_id', pull.costItemId).eq('house', pull.house));
-      else if (pull.type === 'site_cost') ({ error } = await sb.from('site_options').update({ cost: pull.value }).eq('id', pull.siteOptionId));
-      if (error) { results.push('FAILED: ' + pull.item + ' — ' + error.message); continue; }
-      state[pull.stateKey][pull.stateField] = pull.value;
-      results.push('Pulled: ' + pull.item);
-    } catch (e) { results.push('FAILED: ' + pull.item + ' — ' + e.message); }
-  }
-
-  saveSyncState(state);
-  document.getElementById('sync-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(r => `<li>${r}</li>`).join('') + '</ul>';
-  applyBtn.style.display = 'none';
-  pendingSyncPlan = null;
-  loadSheetData();
-}
-
-// ═══════════════════════════════════════════════════════════
-// Seed Reference Houses — one-time (but safe to re-run) copy of
-// Kiawah/Sanibel/Vero's raw measurements (Master Plan tabs, I3:I12 +
-// I18:I29) into Supabase's reference_house_measurements table. This is
-// what lets the public webpage's "load a base plan" dropdown work from
-// Supabase instead of reading the Sheet directly.
-// ═══════════════════════════════════════════════════════════
-const REF_ROW_TO_FIELD = {
-  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
-  7: 'attic_storage_sf', 8: 'habitable_attic_sf',
-  9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
-  18: 'exterior_doors', 19: 'windows', 20: 'baths',
-  21: 'cabinets_lf', 22: 'countertop_lf', 23: 'staircases',
-  24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
-  27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
-};
-
-async function seedReferenceHouseMeasurements() {
-  const btn = document.getElementById('seed-ref-btn');
-  const statusEl = document.getElementById('sync-status');
-  btn.disabled = true;
-  statusEl.textContent = 'Reading reference houses from Sheet…';
-  try {
-    const token = await getSheetsAccessToken();
-    const results = [];
-    for (const house of Object.keys(HOUSE_TABS)) {
-      const tab = HOUSE_TABS[house];
-      const [areaVals, countVals] = await sheetsGet(token, [`'${tab}'!I3:I12`, `'${tab}'!I18:I29`]);
-      const row = { house };
-      areaVals.forEach((r, i) => { const field = REF_ROW_TO_FIELD[3 + i]; if (field) row[field] = Number((r && r[0]) || 0); });
-      countVals.forEach((r, i) => { const field = REF_ROW_TO_FIELD[18 + i]; if (field) row[field] = Number((r && r[0]) || 0); });
-      const { error } = await sb.from('reference_house_measurements').upsert(row, { onConflict: 'house' });
-      if (error) throw new Error(house + ': ' + error.message);
-      results.push(house + ' ✓');
-    }
-    statusEl.textContent = 'Seeded: ' + results.join(', ');
-  } catch (e) {
-    statusEl.textContent = '';
-    alert('Seed failed: ' + e.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-function closeSyncModal() {
-  document.getElementById('sync-modal').classList.remove('active');
-  const applyBtn = document.getElementById('sync-apply-btn');
-  applyBtn.disabled = false;
-  applyBtn.textContent = 'Apply These Changes';
-}
-</script>
-</body>
-</html>
+    const safeName  = (r.item_name || '').repl
