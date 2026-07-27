@@ -1911,6 +1911,7 @@ btnConfirm.addEventListener('click', async () => {
       const basementLineItems = computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows);
       basementLineItems.forEach(li => {
         customItems.push({ name: li.name, description: basementDescByName[li.name] || '', unitCost: li.unitCost, quantity: li.quantity });
+        console.log('[Basement line] ' + li.name + ' — $' + li.unitCost + ' × qty ' + li.quantity + ' = $' + (li.unitCost * li.quantity).toFixed(2));
       });
 
       // Record the combined basement SF (B5) and grand total dollar cost (B6,
