@@ -1914,18 +1914,19 @@ btnConfirm.addEventListener('click', async () => {
         console.log('[Basement line] ' + li.name + ' — $' + li.unitCost + ' × qty ' + li.quantity + ' = $' + (li.unitCost * li.quantity).toFixed(2));
       });
 
-      // Record the combined basement SF (B5) and grand total dollar cost (B6,
-      // sum of the same line items just written to BuilderTrend) in the
-      // Sheet's Additional Pricing tab — informational only, not read back
-      // by any calculation.
-      const basementGrandTotal = basementLineItems.reduce((sum, li) => sum + li.unitCost * li.quantity, 0);
+      // Record the raw SF values in the Sheet's Additional Pricing tab —
+      // B5 = Unfinished, B6 = Finished. B7 (grand total) is a LIVE FORMULA
+      // in the Sheet (=IF(B5>0,B2+(B5*B3),0)+IF(B6>0,IF(B5=0,B2,0)+B6*(B3+B4),0))
+      // and is never written here — it derives itself from B2-B6.
+      // Custom Plan's I3 is likewise a live formula (='ADDITIONAL PRICING'!B5+'ADDITIONAL PRICING'!B6)
+      // and is never written directly either.
       try {
         await sheetsWriteTab('ADDITIONAL PRICING', [
-          { range: 'B5', value: basementFinishedSf + basementUnfinishedSf },
-          { range: 'B6', value: basementGrandTotal }
+          { range: 'B5', value: basementUnfinishedSf },
+          { range: 'B6', value: basementFinishedSf }
         ]);
       } catch (e) {
-        console.log('Could not write basement totals to Additional Pricing tab: ' + e.message);
+        console.log('Could not write basement SF to Additional Pricing tab: ' + e.message);
       }
     }
 
