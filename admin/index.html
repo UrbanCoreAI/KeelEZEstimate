@@ -96,7 +96,6 @@
       <span id="user-email-label" style="margin-right:12px;color:#5f6368;"></span>
       <span id="sync-status" style="margin-right:12px;font-size:11px;color:#5f6368;"></span>
       <button id="sync-btn" onclick="syncChangesToSheets()" style="padding:4px 8px;cursor:pointer;background:#1a73e8;color:#fff;border:none;border-radius:4px;margin-right:8px;">Sync Changes to Sheets</button>
-      <button id="seed-ref-btn" onclick="seedReferenceHouseMeasurements()" title="One-time: copy Kiawah/Sanibel/Vero's raw measurements from the Sheet into Supabase. Safe to re-run." style="padding:4px 8px;cursor:pointer;background:#0f9d58;color:#fff;border:none;border-radius:4px;margin-right:8px;">Seed Reference Houses</button>
       <button onclick="signOut()" style="padding:4px 8px;cursor:pointer;">Sign Out</button>
     </div>
   </header>
@@ -312,7 +311,7 @@ async function loadSheetData() {
 
     let trCols = document.createElement('tr');
     trCols.style.background = '#f1f3f4'; trCols.style.fontWeight = 'bold';
-    trCols.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td>Category</td><td colspan="2">Option Label</td><td colspan="2">Cost ($)</td><td>Notes</td>`;
+    trCols.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td>Category</td><td>Option Label</td><td>Cost ($)</td><td>Quantity</td><td colspan="2">Notes</td>`;
     tbody.appendChild(trCols);
 
     data.forEach(so => {
@@ -321,9 +320,10 @@ async function loadSheetData() {
       tr.innerHTML = `
         <td class="row-hdr" style="text-align:center;">${currRow}</td>
         <td>${so.category}</td>
-        <td colspan="2"><strong>${so.option_label}</strong></td>
-        <td colspan="2">$${so.cost} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'cost', '${so.option_label}', 'Cost ($)', '=COST', '${so.cost}')">✏️</button></td>
-        <td>${so.notes || ''} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'notes', '${so.option_label}', 'Notes', '', '${so.notes || ''}')">✏️</button></td>
+        <td><strong>${so.option_label}</strong></td>
+        <td>$${so.cost} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'cost', '${so.option_label}', 'Cost ($)', '=COST', '${so.cost}')">✏️</button></td>
+        <td>${so.quantity ?? 0} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'quantity', '${so.option_label}', 'Quantity', '=QUANTITY', '${so.quantity ?? 0}')">✏️</button></td>
+        <td colspan="2">${so.notes || ''} <button class="pencil-btn" onclick="openEditModal('site_options', ${so.id}, 'notes', '${so.option_label}', 'Notes', '', '${so.notes || ''}')">✏️</button></td>
       `;
       tbody.appendChild(tr);
     });
@@ -475,14 +475,19 @@ async function loadSheetData() {
     const formattedAmt      = '$' + amtVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const formattedUnitCost = '$' + unitCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    const qtyFormulaStr  = r.is_fixed ? '1' : ('=' + (r.quantity_formula || 'fixed'));
-    const amtFormulaStr  = (activeTab === '2026 CUSTOM PLAN') ? ('=D' + rowIdx + '*F' + rowIdx) : amtVal.toFixed(2);
+    // quantity_formula already carries its own leading "=" (or is a bare
+    // "1" for fixed-cost rows) — do not prepend another one here.
+    const qtyFormulaStr  = r.quantity_formula || '';
+    const amtFormulaStr  = (activeTab === '2026 CUSTOM PLAN') ? (r.amount_formula || '') : amtVal.toFixed(2);
+    const unitCostFormulaStr = (activeTab === '2026 CUSTOM PLAN') ? (r.unit_cost_formula || '') : unitFormulaStr;
 
     const currRow = rowIdx++;
 
     const safeName  = (r.item_name || '').replace(/'/g, "\\'");
     const safeBasis = (r.calc_basis || '').replace(/'/g, "\\'");
     const safeQtyF  = (r.quantity_formula || '').replace(/'/g, "\\'");
+    const safeAmtF  = (r.amount_formula || '').replace(/'/g, "\\'");
+    const safeUnitF = (r.unit_cost_formula || '').replace(/'/g, "\\'");
 
     let tr = document.createElement('tr');
     tr.innerHTML = `
@@ -490,30 +495,75 @@ async function loadSheetData() {
       <td onclick="selectCell('A${currRow}', '${r.cost_code || ''}')">${r.cost_code || ''}</td>
       <td onclick="selectCell('B${currRow}', '${safeName}')"><strong>${r.item_name || ''}</strong></td>
       <td onclick="selectCell('C${currRow}', '${safeBasis}')">
-        ${r.calc_basis || ''} 
+        ${r.calc_basis || ''}
         <button class="pencil-btn" title="Edit Calc Basis" onclick="openEditModal('cost_items', ${r.id}, 'calc_basis', '${safeName}', 'Calc Basis', '${safeBasis}', '${safeBasis}')">✏️</button>
       </td>
       <td onclick="selectCell('D${currRow}', '${qtyFormulaStr.replace(/'/g, "\\'")}')">
-        ${qtyVal} 
+        ${qtyVal}
         <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\\'")}', '${safeQtyF}')">✏️</button>
       </td>
       <td onclick="selectCell('E${currRow}', '${amtFormulaStr.replace(/'/g, "\\'")}')">
-        ${formattedAmt} 
-        ${activeTab === '2026 CUSTOM PLAN' 
-          ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('custom_plan', ${r.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\\'")}', '${amtVal.toFixed(2)}')">✏️</button>`
+        ${formattedAmt}
+        ${activeTab === '2026 CUSTOM PLAN'
+          ? `<button class="pencil-btn" title="Edit Amount Formula" onclick="openEditModal('cost_items', ${r.id}, 'amount_formula', '${safeName}', 'Amount Formula', '${safeAmtF}', '${safeAmtF}')">✏️</button>`
           : (houseRate ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('house_rates', ${houseRate.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\\'")}', '${amtVal}')">✏️</button>` : '')
         }
       </td>
-      <td onclick="selectCell('F${currRow}', '${unitFormulaStr.replace(/'/g, "\\'")}')">
-        ${formattedUnitCost} 
+      <td onclick="selectCell('F${currRow}', '${unitCostFormulaStr.replace(/'/g, "\\'")}')">
+        ${formattedUnitCost}
         ${activeTab === '2026 CUSTOM PLAN'
-          ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="openEditModal('custom_plan', ${r.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>`
+          ? `<button class="pencil-btn" title="Edit Unit Cost Formula" onclick="openEditModal('cost_items', ${r.id}, 'unit_cost_formula', '${safeName}', 'Unit Cost Formula', '${safeUnitF}', '${safeUnitF}')">✏️</button>`
           : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
         }
       </td>
     `;
     tbody.appendChild(tr);
   });
+
+  if (activeTab === '2026 CUSTOM PLAN') {
+    await renderCustomPlanJobDataBlock(tbody, rowIdx);
+  }
+}
+
+// Read-only "last written job" record — the BUILDING AREA (rows 3-13) and
+// QUANTITIES (rows 16-29) mini-tables that share columns H/I/J on the
+// Custom Plan tab. This is per-job scratch data (whatever the last
+// estimate written left behind), not a rate/pricing constant, so — unlike
+// everything else on this tab — it's shown for reference only, no pencil.
+async function renderCustomPlanJobDataBlock(tbody, startRowIdx) {
+  let rowIdx = startRowIdx;
+  const hdrTr = document.createElement('tr');
+  hdrTr.className = 'col-hdr';
+  hdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">BUILDING AREA / QUANTITIES — last written job (read-only)</td>`;
+  tbody.appendChild(hdrTr);
+
+  const AREA_LABELS = ['Basement', '1st Floor', '2nd Floor', '3rd Floor', 'Attic with Storage', 'Habitable Attic', 'Front Porch', 'Rear Porch', 'Rear Deck', 'Garage'];
+  const QTY_LABELS = ['# of Exterior Doors', '# of Windows', '# of Baths', 'LF of Cabinets', 'LF of Countertop', '# of Staircases', '# of Front Porch Columns', '# of Garage Doors', '# of Interior Doors', 'SF of Carpet', 'SF of Hardwood', 'SF of Tile'];
+
+  try {
+    const token = await getSheetsAccessToken();
+    const [areaRows, qtyRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!I3:I13`, `'${CUSTOM_TAB}'!I18:I29`]);
+    AREA_LABELS.forEach((label, i) => {
+      const val = (areaRows[i] && areaRows[i][0]) || 0;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3">${label}</td><td colspan="2">${val}</td><td></td>`;
+      tbody.appendChild(tr);
+    });
+    const totalVal = (areaRows[10] && areaRows[10][0]) || 0;
+    const totalTr = document.createElement('tr');
+    totalTr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3"><strong>TOTAL AREA</strong></td><td colspan="2"><strong>${totalVal}</strong></td><td></td>`;
+    tbody.appendChild(totalTr);
+    QTY_LABELS.forEach((label, i) => {
+      const val = (qtyRows[i] && qtyRows[i][0]) || 0;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3">${label}</td><td colspan="2">${val}</td><td></td>`;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    const errTr = document.createElement('tr');
+    errTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">(could not read — ${e.message})</td>`;
+    tbody.appendChild(errTr);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -570,6 +620,19 @@ function validateQuantityFormula(formula) {
     if (!KNOWN_ROWS.includes(rowNum)) return { valid: false, reason: 'reference to row ' + rowNum + ' is not a known measurement row' };
   }
   return { valid: true };
+}
+
+// amount_formula/unit_cost_formula follow one fixed, uniform pattern for
+// every tracked cost item (confirmed via full Sheet audit) — no per-row
+// variation, so validation is a strict exact-match gate, same idea as
+// calc-engine.js's copies of these two functions.
+function validateAmountFormula(formula, row) {
+  const expected = '=D' + row + '*F' + row;
+  return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
+}
+function validateUnitCostFormula(formula, row) {
+  const expected = "=AVERAGE('2026 MASTER PLAN KIAWAH'!F" + row + ",'2026 MASTER PLAN SANIBEL'!F" + row + ",'2026 MASTER PLAN VERO'!F" + row + ')';
+  return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 
 function getSheetsAccessToken() {
@@ -642,7 +705,7 @@ async function computeSyncPlan() {
   const pushes = [], pulls = [], conflicts = [];
 
   const [{ data: costItems }, { data: houseRates }, { data: siteOptions }, { data: basementPricingRows }] = await Promise.all([
-    sb.from('cost_items').select('id,item_name,quantity_formula'),
+    sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula'),
     sb.from('house_rates').select('cost_item_id,house,amount'),
     sb.from('site_options').select('id,category,option_label,cost'),
     sb.from('basement_pricing').select('*').eq('id', 1)
@@ -650,7 +713,7 @@ async function computeSyncPlan() {
   const basementPricing = basementPricingRows && basementPricingRows[0];
 
   const ranges = [
-    `'${CUSTOM_TAB}'!B3:D100`,
+    `'${CUSTOM_TAB}'!B3:F100`,
     `'${HOUSE_TABS.kiawah}'!B3:E100`,
     `'${HOUSE_TABS.sanibel}'!B3:E100`,
     `'${HOUSE_TABS.vero}'!B3:E100`,
@@ -680,6 +743,41 @@ async function computeSyncPlan() {
       const check = validateQuantityFormula(sheetFormula);
       if (!check.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name, reason: 'sheet formula ' + sheetFormula + ' — ' + check.reason }); continue; }
       pulls.push({ type: 'formula', costItemId: item.id, item: item.item_name, value: sheetFormula, stateKey: 'costFormulas', stateField: key });
+    }
+  }
+
+  // Cost item amount/unit cost formulas vs Custom Plan columns E/F
+  for (const item of (costItems || [])) {
+    const rowIdx = findRowByName(customRows, item.item_name);
+    if (rowIdx === -1) continue;
+    const rowNum = rowIdx + 3;
+    const sheetAmountFormula = (customRows[rowIdx][3] || '').toString();
+    const sheetUnitCostFormula = (customRows[rowIdx][4] || '').toString();
+
+    const amtKey = item.item_name + '::amount_formula';
+    const amtAction = decideSyncAction(state.costFormulas[amtKey], item.amount_formula, sheetAmountFormula);
+    if (amtAction === 'conflict') { conflicts.push({ type: 'amount_formula', item: item.item_name, supabase: item.amount_formula, sheet: sheetAmountFormula }); }
+    else if (amtAction === 'push') {
+      const amtCheck = validateAmountFormula(item.amount_formula, rowNum);
+      if (!amtCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (amount)', reason: amtCheck.reason }); }
+      else pushes.push({ type: 'formula', item: item.item_name + ' (amount)', range: `'${CUSTOM_TAB}'!E${rowNum}`, value: item.amount_formula, stateKey: 'costFormulas', stateField: amtKey });
+    } else if (amtAction === 'pull') {
+      const amtPullCheck = validateAmountFormula(sheetAmountFormula, rowNum);
+      if (!amtPullCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (amount)', reason: 'sheet: ' + amtPullCheck.reason }); }
+      else pulls.push({ type: 'cost_item_field', costItemId: item.id, field: 'amount_formula', item: item.item_name + ' (amount)', value: sheetAmountFormula, stateKey: 'costFormulas', stateField: amtKey });
+    }
+
+    const unitKey = item.item_name + '::unit_cost_formula';
+    const unitAction = decideSyncAction(state.costFormulas[unitKey], item.unit_cost_formula, sheetUnitCostFormula);
+    if (unitAction === 'conflict') { conflicts.push({ type: 'unit_cost_formula', item: item.item_name, supabase: item.unit_cost_formula, sheet: sheetUnitCostFormula }); }
+    else if (unitAction === 'push') {
+      const unitCheck = validateUnitCostFormula(item.unit_cost_formula, rowNum);
+      if (!unitCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (unit cost)', reason: unitCheck.reason }); }
+      else pushes.push({ type: 'formula', item: item.item_name + ' (unit cost)', range: `'${CUSTOM_TAB}'!F${rowNum}`, value: item.unit_cost_formula, stateKey: 'costFormulas', stateField: unitKey });
+    } else if (unitAction === 'pull') {
+      const unitPullCheck = validateUnitCostFormula(sheetUnitCostFormula, rowNum);
+      if (!unitPullCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (unit cost)', reason: 'sheet: ' + unitPullCheck.reason }); }
+      else pulls.push({ type: 'cost_item_field', costItemId: item.id, field: 'unit_cost_formula', item: item.item_name + ' (unit cost)', value: sheetUnitCostFormula, stateKey: 'costFormulas', stateField: unitKey });
     }
   }
 
@@ -785,6 +883,7 @@ async function applySyncChanges() {
       else if (pull.type === 'amount') ({ error } = await sb.from('house_rates').update({ amount: pull.value }).eq('cost_item_id', pull.costItemId).eq('house', pull.house));
       else if (pull.type === 'site_cost') ({ error } = await sb.from('site_options').update({ cost: pull.value }).eq('id', pull.siteOptionId));
       else if (pull.type === 'basement_pricing') ({ error } = await sb.from('basement_pricing').update({ [pull.field]: pull.value }).eq('id', 1));
+      else if (pull.type === 'cost_item_field') ({ error } = await sb.from('cost_items').update({ [pull.field]: pull.value }).eq('id', pull.costItemId));
       if (error) { results.push('FAILED: ' + pull.item + ' — ' + error.message); continue; }
       state[pull.stateKey][pull.stateField] = pull.value;
       results.push('Pulled: ' + pull.item);
@@ -796,50 +895,6 @@ async function applySyncChanges() {
   applyBtn.style.display = 'none';
   pendingSyncPlan = null;
   loadSheetData();
-}
-
-// ═══════════════════════════════════════════════════════════
-// Seed Reference Houses — one-time (but safe to re-run) copy of
-// Kiawah/Sanibel/Vero's raw measurements (Master Plan tabs, I3:I12 +
-// I18:I29) into Supabase's reference_house_measurements table. This is
-// what lets the public webpage's "load a base plan" dropdown work from
-// Supabase instead of reading the Sheet directly.
-// ═══════════════════════════════════════════════════════════
-const REF_ROW_TO_FIELD = {
-  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
-  7: 'attic_storage_sf', 8: 'habitable_attic_sf',
-  9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
-  18: 'exterior_doors', 19: 'windows', 20: 'baths',
-  21: 'cabinets_lf', 22: 'countertop_lf', 23: 'staircases',
-  24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
-  27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
-};
-
-async function seedReferenceHouseMeasurements() {
-  const btn = document.getElementById('seed-ref-btn');
-  const statusEl = document.getElementById('sync-status');
-  btn.disabled = true;
-  statusEl.textContent = 'Reading reference houses from Sheet…';
-  try {
-    const token = await getSheetsAccessToken();
-    const results = [];
-    for (const house of Object.keys(HOUSE_TABS)) {
-      const tab = HOUSE_TABS[house];
-      const [areaVals, countVals] = await sheetsGet(token, [`'${tab}'!I3:I12`, `'${tab}'!I18:I29`]);
-      const row = { house };
-      areaVals.forEach((r, i) => { const field = REF_ROW_TO_FIELD[3 + i]; if (field) row[field] = Number((r && r[0]) || 0); });
-      countVals.forEach((r, i) => { const field = REF_ROW_TO_FIELD[18 + i]; if (field) row[field] = Number((r && r[0]) || 0); });
-      const { error } = await sb.from('reference_house_measurements').upsert(row, { onConflict: 'house' });
-      if (error) throw new Error(house + ': ' + error.message);
-      results.push(house + ' ✓');
-    }
-    statusEl.textContent = 'Seeded: ' + results.join(', ');
-  } catch (e) {
-    statusEl.textContent = '';
-    alert('Seed failed: ' + e.message);
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 function closeSyncModal() {
