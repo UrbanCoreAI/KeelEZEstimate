@@ -482,6 +482,38 @@ async function loadSheetData() {
       console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
     }
   }
+
+  // Build the same job_quantities shape calc-engine.js uses, from the raw
+  // values just fetched above, so the Quantity column can show the REAL
+  // evaluated number instead of a hardcoded placeholder.
+  const jq = {};
+  if (activeTab === '2026 CUSTOM PLAN') {
+    // jobAreaVals[0] = I3 (basement, excluded from TOTAL_AREA_ROWS — see
+    // calc-engine.js), jobAreaVals[1..9] = I4-I12, jobAreaVals[10] = I13 (TOTAL AREA)
+    const AREA_FIELD_BY_OFFSET = { 1: 'floor1_sf', 2: 'floor2_sf', 3: 'floor3_sf', 4: 'attic_storage_sf', 5: 'habitable_attic_sf', 6: 'front_porch_sf', 7: 'rear_porch_sf', 8: 'rear_deck_sf', 9: 'garage_sf' };
+    Object.keys(AREA_FIELD_BY_OFFSET).forEach(off => { jq[AREA_FIELD_BY_OFFSET[off]] = Number((jobAreaVals[off] && jobAreaVals[off][0]) || 0); });
+    const QTY_FIELD_BY_OFFSET = { 0: 'exterior_doors', 1: 'windows', 2: 'baths', 3: 'cabinets_lf', 4: 'countertop_lf', 5: 'staircases', 6: 'porch_columns', 7: 'garage_doors', 8: 'interior_doors', 9: 'carpet_sf', 10: 'hardwood_sf', 11: 'tile_sf' };
+    Object.keys(QTY_FIELD_BY_OFFSET).forEach(off => { jq[QTY_FIELD_BY_OFFSET[off]] = Number((jobQtyVals[off] && jobQtyVals[off][0]) || 0); });
+  }
+  const TOTAL_AREA_FIELDS = ['floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf'];
+  function totalAreaSum(j) { return TOTAL_AREA_FIELDS.reduce((sum, f) => sum + (Number(j[f]) || 0), 0); }
+  const ADMIN_CELL_REF_RE = /\$?I\$?(\d+)/g;
+  const ADMIN_ROW_TO_FIELD = { 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf', 7: 'attic_storage_sf', 8: 'habitable_attic_sf', 9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf', 18: 'exterior_doors', 19: 'windows', 20: 'baths', 21: 'cabinets_lf', 22: 'countertop_lf', 23: 'staircases', 24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors', 27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf' };
+  function evaluateQuantityFormula(formula, j) {
+    const f = (formula || '').trim();
+    if (f === '') return 0;
+    if (!f.startsWith('=')) { const n = Number(f); return isFinite(n) ? n : 0; }
+    const body = f.slice(1);
+    let total = 0, m;
+    ADMIN_CELL_REF_RE.lastIndex = 0;
+    while ((m = ADMIN_CELL_REF_RE.exec(body)) !== null) {
+      const rowN = parseInt(m[1], 10);
+      if (rowN === 13) { total += totalAreaSum(j); continue; }
+      const field = ADMIN_ROW_TO_FIELD[rowN];
+      total += field ? (Number(j[field]) || 0) : 0;
+    }
+    return total;
+  }
   function hijCellsFor(rowNum) {
     if (!(activeTab === '2026 CUSTOM PLAN')) return '<td></td><td></td><td></td><td></td>';
     if (rowNum >= 3 && rowNum <= 12) {
@@ -563,8 +595,8 @@ async function loadSheetData() {
       const uV = (hrV && hrV.quantity > 0) ? (hrV.amount / hrV.quantity) : (hrV?.amount || 0);
 
       unitCost = (uK + uS + uV) / 3;
-      qtyVal = r.is_fixed ? 1 : 0;
-      amtVal = unitCost * (r.is_fixed ? 1 : qtyVal);
+      qtyVal = evaluateQuantityFormula(r.quantity_formula, jq);
+      amtVal = unitCost * qtyVal;
       unitFormulaStr = '=AVERAGE(\'2026 MASTER PLAN KIAWAH\'!F' + rowNum + ', \'2026 MASTER PLAN SANIBEL\'!F' + rowNum + ', \'2026 MASTER PLAN VERO\'!F' + rowNum + ')';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
