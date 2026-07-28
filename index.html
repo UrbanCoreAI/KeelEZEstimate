@@ -1216,12 +1216,13 @@ const sbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SU
 // KeelEZEstimateExtensionV1/supabase-migration/calc-engine.js — these two
 // copies are kept in sync by hand since the two projects don't share a
 // build step.
-// Row 3 (basement) is deliberately absent — basement is priced entirely by
-// its own dedicated Finished/Unfinished Basement lines (see
-// computeBasementLineItems below), not folded into any cost item's quantity.
-// Sheet cell I3 is no longer read or written anywhere in this file.
+// Row 3 (basement) is back — Framing Material/Roof Trusses/Framing Labor
+// are confirmed to include basement SF in their quantity again (reversing
+// an earlier "organic, fully separate" decision). basement_sf isn't read
+// from a .f-input (there isn't one) — buildJobQuantitiesFromInputs()
+// injects it directly from the Finished/Unfinished Basement fields.
 const ROW_TO_FIELD = {
-  4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
+  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
   7: 'attic_storage_sf', 8: 'habitable_attic_sf',
   9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
   18: 'exterior_doors', 19: 'windows', 20: 'baths',
@@ -1229,7 +1230,7 @@ const ROW_TO_FIELD = {
   24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
   27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
 };
-const TOTAL_AREA_ROWS = [4,5,6,7,8,9,10,11,12];
+const TOTAL_AREA_ROWS = [3,4,5,6,7,8,9,10,11,12];
 
 // Basement pricing — a fixed cost plus two flat $/SF rates, not part of
 // the quantity_formula/cost_items system (see 04_basement_pricing.sql).
@@ -1306,6 +1307,13 @@ function buildJobQuantitiesFromInputs() {
     const field = ROW_TO_FIELD[row];
     if (field) jq[field] = parseFloat(inp.value) || 0;
   });
+  // basement_sf has no .f-input (the field was split into Finished/
+  // Unfinished Basement) — read directly from those two fields instead.
+  // Combined total, matching what gets written into Sheet cell I3
+  // (='ADDITIONAL PRICING'!B5+'ADDITIONAL PRICING'!B6).
+  const finBasEl = document.getElementById('basement-finished-sf');
+  const unfBasEl = document.getElementById('basement-unfinished-sf');
+  jq.basement_sf = (parseFloat(finBasEl && finBasEl.value) || 0) + (parseFloat(unfBasEl && unfBasEl.value) || 0);
   return jq;
 }
 
