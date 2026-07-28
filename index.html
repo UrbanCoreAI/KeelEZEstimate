@@ -1238,18 +1238,18 @@ const TOTAL_AREA_ROWS = [3,4,5,6,7,8,9,10,11,12];
 // AND quantity (quantity = the actual SF), instead of one collapsed dollar
 // total at quantity 1:
 //   - "Basement Fixed Cost" (qty 1) — once, whenever any basement SF is present.
-//   - "Unfinished Basement" (qty = unfinishedSf, unit cost = shell $/SF only)
-//   - "Finished Basement" (qty = finishedSf, unit cost = shell + finish $/SF)
+//   - "Unfinished Basement Allowance" (qty = unfinishedSf, unit cost = shell $/SF only)
+//   - "Finished Basement Allowance" (qty = finishedSf, unit cost = shell + finish $/SF)
 function computeBasementLineItems(finishedSf, unfinishedSf, pricing) {
   const items = [];
   if (finishedSf > 0 || unfinishedSf > 0) {
     items.push({ name: 'Basement Fixed Cost', unitCost: pricing.fixed_cost_per_house, quantity: 1 });
   }
   if (unfinishedSf > 0) {
-    items.push({ name: 'Unfinished Basement', unitCost: pricing.shell_cost_per_sf, quantity: unfinishedSf });
+    items.push({ name: 'Unfinished Basement Allowance', unitCost: pricing.shell_cost_per_sf, quantity: unfinishedSf });
   }
   if (finishedSf > 0) {
-    items.push({ name: 'Finished Basement', unitCost: pricing.shell_cost_per_sf + pricing.finish_cost_per_sf, quantity: finishedSf });
+    items.push({ name: 'Finished Basement Allowance', unitCost: pricing.shell_cost_per_sf + pricing.finish_cost_per_sf, quantity: finishedSf });
   }
   return items;
 }
@@ -1913,8 +1913,8 @@ btnConfirm.addEventListener('click', async () => {
       const { data: pricingRows, error: pricingErr } = await sbClient.from('basement_pricing').select('*').eq('id', 1).single();
       if (pricingErr || !pricingRows) { showStatus('Could not load basement pricing from Supabase: ' + (pricingErr ? pricingErr.message : 'not found'), 'error'); return; }
       const basementDescByName = {
-        'Unfinished Basement': (document.getElementById('basement-unfinished-desc').value || '').trim(),
-        'Finished Basement': (document.getElementById('basement-finished-desc').value || '').trim()
+        'Unfinished Basement Allowance': (document.getElementById('basement-unfinished-desc').value || '').trim(),
+        'Finished Basement Allowance': (document.getElementById('basement-finished-desc').value || '').trim()
       };
       const basementLineItems = computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows);
       basementLineItems.forEach(li => {
