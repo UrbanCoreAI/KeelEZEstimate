@@ -200,6 +200,14 @@ async function signInWithPassword() {
     msg.style.color = '#d93025'; msg.textContent = 'Unauthorized account email.'; return;
   }
   msg.style.color = '#5f6368'; msg.textContent = 'Signing in…';
+  // Kick off the Google popup NOW, synchronously within this click handler
+  // — not after Supabase auth resolves. Browsers only allow a popup within
+  // a short window of a genuine user gesture; waiting for the Supabase
+  // network round-trip first (then triggering it later from
+  // onAuthStateChange → loadSheetData()) misses that window, so the popup
+  // gets silently blocked and the Custom Plan tab hangs blank until a
+  // second, fresh click (switching tabs) re-triggers it validly.
+  getSheetsAccessToken().catch(() => {});
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   if (error) {
     // If user exists in rate_admins but not yet created in Auth, attempt automatic creation
@@ -725,21 +733,28 @@ function validateUnitCostFormula(formula, row) {
   return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 
+let sheetsTokenRequestInFlight = null;
 function getSheetsAccessToken() {
-  return new Promise((resolve, reject) => {
-    if (sheetsAccessToken) { resolve(sheetsAccessToken); return; }
+  if (sheetsAccessToken) return Promise.resolve(sheetsAccessToken);
+  // Reuse the same in-flight request instead of opening a second popup —
+  // matters because this now gets kicked off from signInWithPassword() AND
+  // (independently) from loadSheetData() shortly after.
+  if (sheetsTokenRequestInFlight) return sheetsTokenRequestInFlight;
+  sheetsTokenRequestInFlight = new Promise((resolve, reject) => {
     if (!window.google || !google.accounts) { reject(new Error('Google Identity Services not loaded yet — try again in a moment.')); return; }
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: 'https://www.googleapis.com/auth/spreadsheets',
       callback: (resp) => {
+        sheetsTokenRequestInFlight = null;
         if (resp.error) { reject(new Error(resp.error)); return; }
         sheetsAccessToken = resp.access_token;
         resolve(sheetsAccessToken);
       }
     });
     tokenClient.requestAccessToken();
-  });
+  }).catch(e => { sheetsTokenRequestInFlight = null; throw e; });
+  return sheetsTokenRequestInFlight;
 }
 
 async function sheetsGet(token, ranges) {
