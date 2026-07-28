@@ -356,38 +356,74 @@ async function loadSheetData() {
       tbody.appendChild(tr);
     });
 
-    // Basement Total (SF) and Grand Total ($) — read-only, live from the
-    // Sheet's Additional Pricing tab (B5/B6), written whenever an estimate
-    // with a basement is confirmed. Informational record only, not a
-    // Supabase-stored constant, so there's no pencil-edit here.
-    let trTotal = document.createElement('tr');
-    let totalRow = rowIdx++;
-    trTotal.innerHTML = `
-      <td class="row-hdr" style="text-align:center;">${totalRow}</td>
-      <td colspan="3"><strong>Basement Total (SF) — last written job</strong></td>
-      <td colspan="2" id="basement-total-cell">Loading…</td>
+    // total_cost_formula — a real, editable Supabase field (source of
+    // truth), synced to the Sheet's B7 the same way as the 3 constants
+    // above. The calc engine doesn't parse it (it already implements the
+    // identical logic in computeBasementLineItems) — this exists for
+    // fidelity/display/sync.
+    const safeFormula = (data.total_cost_formula || '').replace(/'/g, "\\'");
+    let trFormula = document.createElement('tr');
+    let formulaRow = rowIdx++;
+    trFormula.innerHTML = `
+      <td class="row-hdr" style="text-align:center;">${formulaRow}</td>
+      <td colspan="3"><strong>Grand Total Formula</strong></td>
+      <td colspan="2" style="font-family:monospace;font-size:11px;">${data.total_cost_formula || ''} <button class="pencil-btn" onclick="openEditModal('basement_pricing', ${data.id}, 'total_cost_formula', 'Grand Total Formula', 'Grand Total Formula', '${safeFormula}', '${safeFormula}')">✏️</button></td>
       <td></td>
     `;
-    tbody.appendChild(trTotal);
+    tbody.appendChild(trFormula);
+
+    // Unfinished/Finished SF (B5/B6) and the Grand Total ($, B7) — all
+    // read-only here: B5/B6 are per-job data written on every estimate
+    // (not a rate/pricing constant), and B7 is a live Sheet formula that
+    // computes itself from B2-B6, never written by any code path.
+    let trUnf = document.createElement('tr');
+    let unfRow = rowIdx++;
+    trUnf.innerHTML = `
+      <td class="row-hdr" style="text-align:center;">${unfRow}</td>
+      <td colspan="3"><strong>Unfinished Basement (SF) — last written job</strong></td>
+      <td colspan="2" id="basement-unfinished-cell">Loading…</td>
+      <td></td>
+    `;
+    tbody.appendChild(trUnf);
+    let trFin = document.createElement('tr');
+    let finRow = rowIdx++;
+    trFin.innerHTML = `
+      <td class="row-hdr" style="text-align:center;">${finRow}</td>
+      <td colspan="3"><strong>Finished Basement (SF) — last written job</strong></td>
+      <td colspan="2" id="basement-finished-cell">Loading…</td>
+      <td></td>
+    `;
+    tbody.appendChild(trFin);
     let trGrandTotal = document.createElement('tr');
     let grandTotalRow = rowIdx++;
     trGrandTotal.innerHTML = `
       <td class="row-hdr" style="text-align:center;">${grandTotalRow}</td>
-      <td colspan="3"><strong>Basement Grand Total ($) — last written job</strong></td>
+      <td colspan="3"><strong>Grand Total ($) — last written job</strong></td>
       <td colspan="2" id="basement-grand-total-cell">Loading…</td>
       <td></td>
     `;
     tbody.appendChild(trGrandTotal);
     try {
       const token = await getSheetsAccessToken();
-      const [totalRows, grandTotalRows] = await sheetsGet(token, [`'ADDITIONAL PRICING'!B5`, `'ADDITIONAL PRICING'!B6`]);
-      const cell = document.getElementById('basement-total-cell');
-      if (cell) cell.textContent = (totalRows && totalRows[0] && totalRows[0][0]) || '0';
+      // Computed values, not formula text — B7 is a formula, and this
+      // display needs its actual dollar result, so this bypasses the
+      // shared sheetsGet() (which always forces FORMULA render mode).
+      const q = ['B5', 'B6', 'B7'].map(c => 'ranges=' + encodeURIComponent(`'ADDITIONAL PRICING'!${c}`)).join('&');
+      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
+      const valBody = await valRes.json();
+      if (!valRes.ok) throw new Error(JSON.stringify(valBody));
+      const [unfRows, finRows, grandTotalRows] = valBody.valueRanges.map(vr => vr.values || []);
+      const unfCell = document.getElementById('basement-unfinished-cell');
+      if (unfCell) unfCell.textContent = (unfRows && unfRows[0] && unfRows[0][0]) || '0';
+      const finCell = document.getElementById('basement-finished-cell');
+      if (finCell) finCell.textContent = (finRows && finRows[0] && finRows[0][0]) || '0';
       const gtCell = document.getElementById('basement-grand-total-cell');
       if (gtCell) gtCell.textContent = '$' + ((grandTotalRows && grandTotalRows[0] && grandTotalRows[0][0]) || '0');
     } catch (e) {
-      const cell = document.getElementById('basement-total-cell');
-      if (cell) cell.textContent = '(could not read — ' + e.message + ')';
+      const unfCell = document.getElementById('basement-unfinished-cell');
+      if (unfCell) unfCell.textContent = '(could not read — ' + e.message + ')';
+      const finCell = document.getElementById('basement-finished-cell');
+      if (finCell) finCell.textContent = '(could not read)';
       const gtCell = document.getElementById('basement-grand-total-cell');
       if (gtCell) gtCell.textContent = '(could not read)';
     }
@@ -414,12 +450,63 @@ async function loadSheetData() {
   const { data } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
   if (!data) return;
 
+  // Real Sheet row number (cost_code) -> item, so B-J columns can share the
+  // exact same row alignment the actual Sheet uses — including the H/I/J
+  // "BUILDING AREA"/"QUANTITIES" mini-tables on Custom Plan, which occupy
+  // rows 3-13 and 18-29 regardless of which cost item (if any) sits there.
+  const itemByRow = {};
+  data.forEach(r => { itemByRow[Number(r.cost_code)] = r; });
+  const minRow = Math.min(...data.map(r => Number(r.cost_code)));
+  const maxRow = Math.max(...data.map(r => Number(r.cost_code)));
+
+  // On Custom Plan only: fetch the H/I/J job-data block once, up front, so
+  // it can be merged into rows 3-13 (BUILDING AREA) and 18-29 (QUANTITIES)
+  // as real columns G(blank)/H/I/J — not a separate block underneath.
+  let jobAreaVals = [], jobQtyVals = [];
+  const AREA_LABELS = ['Basement', '1st Floor', '2nd Floor', '3rd Floor', 'Attic with Storage', 'Habitable Attic', 'Front Porch', 'Rear Porch', 'Rear Deck', 'Garage'];
+  const QTY_LABELS = ['# of Exterior Doors', '# of Windows', '# of Baths', 'LF of Cabinets', 'LF of Countertop', '# of Staircases', '# of Front Porch Columns', '# of Garage Doors', '# of Interior Doors', 'SF of Carpet', 'SF of Hardwood', 'SF of Tile'];
+  if (activeTab === '2026 CUSTOM PLAN') {
+    try {
+      const token = await getSheetsAccessToken();
+      // Computed values, not formula text — I3 is now a live formula
+      // (='ADDITIONAL PRICING'!B5+'ADDITIONAL PRICING'!B6) and I13 always
+      // was one (=SUM(I3:I12)), so this needs UNFORMATTED_VALUE, not the
+      // shared sheetsGet()'s FORMULA render mode (which would show the
+      // literal formula text here instead of the actual number).
+      const q = ['I3:I13', 'I18:I29'].map(r => 'ranges=' + encodeURIComponent(`'${CUSTOM_TAB}'!${r}`)).join('&');
+      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
+      const valBody = await valRes.json();
+      if (!valRes.ok) throw new Error(JSON.stringify(valBody));
+      [jobAreaVals, jobQtyVals] = valBody.valueRanges.map(vr => vr.values || []);
+    } catch (e) {
+      console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
+    }
+  }
+  function hijCellsFor(rowNum) {
+    if (!(activeTab === '2026 CUSTOM PLAN')) return '<td></td><td></td><td></td><td></td>';
+    if (rowNum >= 3 && rowNum <= 12) {
+      const label = AREA_LABELS[rowNum - 3];
+      const val = (jobAreaVals[rowNum - 3] && jobAreaVals[rowNum - 3][0]) || 0;
+      return `<td></td><td>${label}</td><td>${val}</td><td>SF</td>`;
+    }
+    if (rowNum === 13) {
+      const val = (jobAreaVals[10] && jobAreaVals[10][0]) || 0;
+      return `<td></td><td><strong>TOTAL AREA</strong></td><td><strong>${val}</strong></td><td>SF</td>`;
+    }
+    if (rowNum >= 18 && rowNum <= 29) {
+      const label = QTY_LABELS[rowNum - 18];
+      const val = (jobQtyVals[rowNum - 18] && jobQtyVals[rowNum - 18][0]) || 0;
+      return `<td></td><td>${label}</td><td>${val}</td><td>EA</td>`;
+    }
+    return '<td></td><td></td><td></td><td></td>';
+  }
+
   let currentSection = '';
   let rowIdx = 1;
 
   let colHdrTr = document.createElement('tr');
   colHdrTr.className = 'col-hdr';
-  colHdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">${activeTab.toUpperCase()} (${currentHouse.toUpperCase()})</td>`;
+  colHdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="10">${activeTab.toUpperCase()} (${currentHouse.toUpperCase()})</td>`;
   tbody.appendChild(colHdrTr);
 
   let headerColsTr = document.createElement('tr');
@@ -432,15 +519,30 @@ async function loadSheetData() {
     <td>Quantity</td>
     <td>Amount</td>
     <td>Unit Cost</td>
+    <td></td>
+    <td>Location</td>
+    <td>Area / Qty</td>
+    <td>Unit</td>
   `;
   tbody.appendChild(headerColsTr);
 
-  data.forEach(r => {
+  for (let rowNum = minRow; rowNum <= maxRow; rowNum++) {
+    const r = itemByRow[rowNum];
+    if (!r) {
+      // No tracked cost item at this row (a subtotal row in the real
+      // Sheet, whose formula isn't stored here) — still render the row so
+      // the BUILDING AREA/QUANTITIES columns (H/I/J) stay aligned.
+      let blankTr = document.createElement('tr');
+      blankTr.innerHTML = `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td><td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td><td></td><td></td><td></td>${hijCellsFor(rowNum)}`;
+      tbody.appendChild(blankTr);
+      continue;
+    }
+
     if (r.section !== currentSection) {
       currentSection = r.section;
       let secTr = document.createElement('tr');
       secTr.className = 'sec-hdr';
-      secTr.innerHTML = `<td class="row-hdr" style="background:#f1f3f4;color:#5f6368;font-weight:normal;">${rowIdx++}</td><td colspan="6">${currentSection.toUpperCase()}</td>`;
+      secTr.innerHTML = `<td class="row-hdr" style="background:#f1f3f4;color:#5f6368;font-weight:normal;"></td><td colspan="9">${currentSection.toUpperCase()}</td>`;
       tbody.appendChild(secTr);
     }
 
@@ -463,13 +565,13 @@ async function loadSheetData() {
       unitCost = (uK + uS + uV) / 3;
       qtyVal = r.is_fixed ? 1 : 0;
       amtVal = unitCost * (r.is_fixed ? 1 : qtyVal);
-      unitFormulaStr = '=AVERAGE(\'2026 MASTER PLAN KIAWAH\'!F' + rowIdx + ', \'2026 MASTER PLAN SANIBEL\'!F' + rowIdx + ', \'2026 MASTER PLAN VERO\'!F' + rowIdx + ')';
+      unitFormulaStr = '=AVERAGE(\'2026 MASTER PLAN KIAWAH\'!F' + rowNum + ', \'2026 MASTER PLAN SANIBEL\'!F' + rowNum + ', \'2026 MASTER PLAN VERO\'!F' + rowNum + ')';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
       qtyVal    = houseRate ? houseRate.quantity : 0;
       amtVal    = houseRate ? houseRate.amount : 0;
       unitCost  = (qtyVal > 0) ? (amtVal / qtyVal) : 0;
-      unitFormulaStr = '=E' + rowIdx + '/D' + rowIdx;
+      unitFormulaStr = '=E' + rowNum + '/D' + rowNum;
     }
 
     const formattedAmt      = '$' + amtVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -481,7 +583,7 @@ async function loadSheetData() {
     const amtFormulaStr  = (activeTab === '2026 CUSTOM PLAN') ? (r.amount_formula || '') : amtVal.toFixed(2);
     const unitCostFormulaStr = (activeTab === '2026 CUSTOM PLAN') ? (r.unit_cost_formula || '') : unitFormulaStr;
 
-    const currRow = rowIdx++;
+    const currRow = rowNum;
 
     const safeName  = (r.item_name || '').replace(/'/g, "\\'");
     const safeBasis = (r.calc_basis || '').replace(/'/g, "\\'");
@@ -516,53 +618,9 @@ async function loadSheetData() {
           : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
         }
       </td>
+      ${hijCellsFor(rowNum)}
     `;
     tbody.appendChild(tr);
-  });
-
-  if (activeTab === '2026 CUSTOM PLAN') {
-    await renderCustomPlanJobDataBlock(tbody, rowIdx);
-  }
-}
-
-// Read-only "last written job" record — the BUILDING AREA (rows 3-13) and
-// QUANTITIES (rows 16-29) mini-tables that share columns H/I/J on the
-// Custom Plan tab. This is per-job scratch data (whatever the last
-// estimate written left behind), not a rate/pricing constant, so — unlike
-// everything else on this tab — it's shown for reference only, no pencil.
-async function renderCustomPlanJobDataBlock(tbody, startRowIdx) {
-  let rowIdx = startRowIdx;
-  const hdrTr = document.createElement('tr');
-  hdrTr.className = 'col-hdr';
-  hdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">BUILDING AREA / QUANTITIES — last written job (read-only)</td>`;
-  tbody.appendChild(hdrTr);
-
-  const AREA_LABELS = ['Basement', '1st Floor', '2nd Floor', '3rd Floor', 'Attic with Storage', 'Habitable Attic', 'Front Porch', 'Rear Porch', 'Rear Deck', 'Garage'];
-  const QTY_LABELS = ['# of Exterior Doors', '# of Windows', '# of Baths', 'LF of Cabinets', 'LF of Countertop', '# of Staircases', '# of Front Porch Columns', '# of Garage Doors', '# of Interior Doors', 'SF of Carpet', 'SF of Hardwood', 'SF of Tile'];
-
-  try {
-    const token = await getSheetsAccessToken();
-    const [areaRows, qtyRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!I3:I13`, `'${CUSTOM_TAB}'!I18:I29`]);
-    AREA_LABELS.forEach((label, i) => {
-      const val = (areaRows[i] && areaRows[i][0]) || 0;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3">${label}</td><td colspan="2">${val}</td><td></td>`;
-      tbody.appendChild(tr);
-    });
-    const totalVal = (areaRows[10] && areaRows[10][0]) || 0;
-    const totalTr = document.createElement('tr');
-    totalTr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3"><strong>TOTAL AREA</strong></td><td colspan="2"><strong>${totalVal}</strong></td><td></td>`;
-    tbody.appendChild(totalTr);
-    QTY_LABELS.forEach((label, i) => {
-      const val = (qtyRows[i] && qtyRows[i][0]) || 0;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="row-hdr" style="text-align:center;">${rowIdx++}</td><td colspan="3">${label}</td><td colspan="2">${val}</td><td></td>`;
-      tbody.appendChild(tr);
-    });
-  } catch (e) {
-    const errTr = document.createElement('tr');
-    errTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">(could not read — ${e.message})</td>`;
-    tbody.appendChild(errTr);
   }
 }
 
@@ -595,7 +653,7 @@ const CUSTOM_TAB = '2026 CUSTOM PLAN';
 const HOUSE_TABS = { kiawah: '2026 MASTER PLAN KIAWAH', sanibel: '2026 MASTER PLAN SANIBEL', vero: '2026 MASTER PLAN VERO' };
 const SITE_TAB = 'SITE OPTIONS';
 const ADDITIONAL_PRICING_TAB = 'ADDITIONAL PRICING';
-const ADDITIONAL_PRICING_CELLS = { fixed_cost_per_house: 'B2', shell_cost_per_sf: 'B3', finish_cost_per_sf: 'B4' };
+const ADDITIONAL_PRICING_CELLS = { fixed_cost_per_house: 'B2', shell_cost_per_sf: 'B3', finish_cost_per_sf: 'B4', total_cost_formula: 'B7' };
 const SYNC_STATE_KEY = 'keelSyncState';
 
 let sheetsAccessToken = null;
@@ -718,7 +776,7 @@ async function computeSyncPlan() {
     `'${HOUSE_TABS.sanibel}'!B3:E100`,
     `'${HOUSE_TABS.vero}'!B3:E100`,
     `'${SITE_TAB}'!A2:C60`,
-    `'${ADDITIONAL_PRICING_TAB}'!B2:B4`
+    `'${ADDITIONAL_PRICING_TAB}'!B2:B7`
   ];
   const [customRows, kiawahRows, sanibelRows, veroRows, siteRows, additionalPricingRows] = await sheetsGet(token, ranges);
   const houseRows = { kiawah: kiawahRows, sanibel: sanibelRows, vero: veroRows };
@@ -814,8 +872,12 @@ async function computeSyncPlan() {
 
   // Basement pricing constants vs ADDITIONAL PRICING tab
   if (basementPricing) {
-    const bpFieldOrder = ['fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf'];
-    bpFieldOrder.forEach((field, idx) => {
+    // additionalPricingRows covers B2:B7 (indices 0-5). B5/B6 (job SF
+    // values) are intentionally skipped here — those aren't synced
+    // constants, they're per-job data written on every estimate.
+    const bpNumericFields = { fixed_cost_per_house: 0, shell_cost_per_sf: 1, finish_cost_per_sf: 2 };
+    Object.keys(bpNumericFields).forEach(field => {
+      const idx = bpNumericFields[field];
       const sheetVal = Number((additionalPricingRows[idx] && additionalPricingRows[idx][0]) || 0);
       const supaVal = Number(basementPricing[field]);
       const action = decideSyncAction(state.basementPricing[field], supaVal, sheetVal);
@@ -824,6 +886,14 @@ async function computeSyncPlan() {
       if (action === 'push') pushes.push({ type: 'basement_pricing', item: field, range: `'${ADDITIONAL_PRICING_TAB}'!${ADDITIONAL_PRICING_CELLS[field]}`, value: supaVal, stateKey: 'basementPricing', stateField: field });
       else pulls.push({ type: 'basement_pricing', field, item: field, value: sheetVal, stateKey: 'basementPricing', stateField: field });
     });
+
+    // total_cost_formula is text (a formula string), not a number.
+    const sheetTotalFormula = ((additionalPricingRows[5] && additionalPricingRows[5][0]) || '').toString();
+    const supaTotalFormula = basementPricing.total_cost_formula || '';
+    const tfAction = decideSyncAction(state.basementPricing.total_cost_formula, supaTotalFormula, sheetTotalFormula);
+    if (tfAction === 'conflict') conflicts.push({ type: 'basement_pricing', item: 'total_cost_formula', supabase: supaTotalFormula, sheet: sheetTotalFormula });
+    else if (tfAction === 'push') pushes.push({ type: 'formula', item: 'total_cost_formula', range: `'${ADDITIONAL_PRICING_TAB}'!B7`, value: supaTotalFormula, stateKey: 'basementPricing', stateField: 'total_cost_formula' });
+    else if (tfAction === 'pull') pulls.push({ type: 'basement_pricing', field: 'total_cost_formula', item: 'total_cost_formula', value: sheetTotalFormula, stateKey: 'basementPricing', stateField: 'total_cost_formula' });
   }
 
   return { token, state, pushes, pulls, conflicts };
