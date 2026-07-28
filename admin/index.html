@@ -35,7 +35,7 @@
 
     /* Sheet Grid */
     .spreadsheet-container { overflow: auto; height: calc(100vh - 130px); background: #f8f9fa; }
-    table.sheet-table { border-collapse: collapse; background: #fff; table-layout: fixed; width: 100%; }
+    table.sheet-table { border-collapse: collapse; background: #fff; table-layout: fixed; width: 100%; border: 2px solid #9aa0a6; }
     table.sheet-table th { background: #f1f3f4; color: #5f6368; font-weight: normal; border: 1px solid #c0c0c0; text-align: center; font-size: 11px; height: 24px; user-select: none; }
     table.sheet-table th.row-hdr { width: 40px; }
     table.sheet-table td { border: 1px solid #e0e0e0; padding: 4px 6px; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; height: 22px; }
@@ -533,7 +533,7 @@ async function loadSheetData() {
       // Sheet, whose formula isn't stored here) — still render the row so
       // the BUILDING AREA/QUANTITIES columns (H/I/J) stay aligned.
       let blankTr = document.createElement('tr');
-      blankTr.innerHTML = `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td><td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td><td></td><td></td><td></td>${hijCellsFor(rowNum)}`;
+      blankTr.innerHTML = `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td><td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td><td></td><td></td><td></td><td></td>${hijCellsFor(rowNum)}`;
       tbody.appendChild(blankTr);
       continue;
     }
