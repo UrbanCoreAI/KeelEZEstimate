@@ -1705,7 +1705,7 @@ btnGo.addEventListener('click', async () => {
 
   btnGo.disabled = true;
   btnGo.textContent = 'Writing…';
-  showStatus('Writing to Google Sheet…', 'info', true);
+  showStatus('Writing to Database…', 'info', true);
   prereqWrap.classList.remove('show');
 
   try {
@@ -1757,7 +1757,7 @@ btnGo.addEventListener('click', async () => {
     const notesVal = (document.getElementById('sales-notes') || {}).value || '';
     await sheetsWriteTab('SALES NOTES', [{ range: 'A1', value: notesVal.trim() }]);
 
-    showStatus('✓ Written ' + updates.length + ' value(s) to sheet.', 'success');
+    showStatus('✓ Written ' + updates.length + ' value(s) to database.', 'success');
     prereqWrap.classList.add('show');
   } catch(e) {
     showStatus('Error: ' + e.message, 'error');
