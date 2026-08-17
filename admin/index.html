@@ -380,6 +380,32 @@ async function loadSheetData() {
     `;
     tbody.appendChild(trFormula);
 
+// Client Preview low/high price range multipliers — own table
+    // (client_preview_settings), same edit pattern as Basement Pricing above.
+    const { data: cpData } = await sb.from('client_preview_settings').select('*').eq('id', 1).single();
+    if (cpData) {
+      let trCpHdr = document.createElement('tr');
+      trCpHdr.className = 'col-hdr';
+      trCpHdr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">CLIENT PREVIEW RANGE</td>`;
+      tbody.appendChild(trCpHdr);
+
+      const cpFields = [
+        { key: 'lower_range_multiplier', label: 'Lower Range Multiplier' },
+        { key: 'upper_range_multiplier', label: 'Upper Range Multiplier' }
+      ];
+      cpFields.forEach(f => {
+        let tr = document.createElement('tr');
+        let currRow = rowIdx++;
+        tr.innerHTML = `
+          <td class="row-hdr" style="text-align:center;">${currRow}</td>
+          <td colspan="3"><strong>${f.label}</strong></td>
+          <td colspan="2">${cpData[f.key]} <button class="pencil-btn" onclick="openEditModal('client_preview_settings', ${cpData.id}, '${f.key}', '${f.label}', '${f.label}', '=${f.key.toUpperCase()}', '${cpData[f.key]}')">✏️</button></td>
+          <td></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+    
     // Unfinished/Finished SF (B5/B6) and the Grand Total ($, B7) — all
     // read-only here: B5/B6 are per-job data written on every estimate
     // (not a rate/pricing constant), and B7 is a live Sheet formula that
