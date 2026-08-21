@@ -284,7 +284,7 @@ async function confirmEdit() {
     return;
   }
 
-  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf'];
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier'];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
@@ -405,7 +405,39 @@ async function loadSheetData() {
         tbody.appendChild(tr);
       });
     }
-    
+
+    // Allowance Tier Multipliers — Good/Better/Best, shared across all 13
+    // allowance line items (9 quantity-driven + 4 fixed-price) in the
+    // Write to Estimate flow. Singleton row (id=1), same edit pattern as
+    // basement_pricing/client_preview_settings above. See
+    // supabase-migrations/allowance_tier_settings.sql for the schema/RLS —
+    // anon can read, only an authenticated session (this admin page) can
+    // update.
+    const { data: tierData } = await sb.from('allowance_tier_settings').select('*').eq('id', 1).single();
+    if (tierData) {
+      let trTierHdr = document.createElement('tr');
+      trTierHdr.className = 'col-hdr';
+      trTierHdr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">ALLOWANCE TIER MULTIPLIERS</td>`;
+      tbody.appendChild(trTierHdr);
+
+      const tierFields = [
+        { key: 'good_multiplier',   label: 'Good Multiplier' },
+        { key: 'better_multiplier', label: 'Better Multiplier' },
+        { key: 'best_multiplier',   label: 'Best Multiplier' }
+      ];
+      tierFields.forEach(f => {
+        let tr = document.createElement('tr');
+        let currRow = rowIdx++;
+        tr.innerHTML = `
+          <td class="row-hdr" style="text-align:center;">${currRow}</td>
+          <td colspan="3"><strong>${f.label}</strong></td>
+          <td colspan="2">${tierData[f.key]}× <button class="pencil-btn" onclick="openEditModal('allowance_tier_settings', ${tierData.id}, '${f.key}', '${f.label}', '${f.label}', '=${f.key.toUpperCase()}', '${tierData[f.key]}')">✏️</button></td>
+          <td></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
     // Unfinished/Finished SF (B5/B6) and the Grand Total ($, B7) — all
     // read-only here: B5/B6 are per-job data written on every estimate
     // (not a rate/pricing constant), and B7 is a live Sheet formula that
