@@ -125,12 +125,13 @@
     </table>
   </div>
 
-  <!-- Exact 8 Google Sheet Tabs from live document -->
+  <!-- House tabs (2026 MASTER PLAN X) are rendered dynamically from the
+       "houses" table by loadHouses() below — no hardcoded house list, so a
+       new base plan just needs a row in that table, nothing edited here. -->
   <div class="sheet-tabs-footer">
     <div class="tab-item active" onclick="switchSheetTab('2026 CUSTOM PLAN', this)">2026 CUSTOM PLAN</div>
-    <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN KIAWAH', this)">2026 MASTER PLAN KIAWAH</div>
-    <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN SANIBEL', this)">2026 MASTER PLAN SANIBEL</div>
-    <div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN VERO', this)">2026 MASTER PLAN VERO</div>
+    <span id="house-tabs-slot"></span>
+    <div class="tab-item" style="background:#e6f4ea;color:#0f9d58;" onclick="addBasePlan()" title="Add a new base plan">+ Add Base Plan</div>
     <div class="tab-item" onclick="switchSheetTab('SITE OPTIONS', this)">SITE OPTIONS</div>
     <div class="tab-item" onclick="switchSheetTab('ADDITIONAL PRICING', this)">ADDITIONAL PRICING</div>
     <div class="tab-item" onclick="switchSheetTab('SALES NOTES', this)">SALES NOTES</div>
@@ -235,9 +236,42 @@ sb.auth.onAuthStateChange((event, session) => {
     document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     document.getElementById('user-email-label').textContent = session.user.email;
-    loadSheetData();
+    loadHouses().then(loadSheetData);
   }
 });
+
+// The list of base plans (Kiawah, Sanibel, Vero, and any added later) lives
+// in the "houses" table, not hardcoded here — this is what makes adding a
+// new base plan a data change instead of a code change.
+let ALL_HOUSES = [];
+async function loadHouses() {
+  const { data, error } = await sb.from('houses').select('*').order('sort_order');
+  if (error) { console.error('Could not load houses:', error.message); return; }
+  ALL_HOUSES = data || [];
+  const slot = document.getElementById('house-tabs-slot');
+  slot.innerHTML = ALL_HOUSES.map(h =>
+    `<div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN ${h.label.toUpperCase()}', this)">2026 MASTER PLAN ${h.label.toUpperCase()}</div>`
+  ).join('');
+}
+
+async function toggleIncludeInAverage(houseRateId, checked) {
+  const { error } = await sb.from('house_rates').update({ include_in_average: checked }).eq('id', houseRateId);
+  if (error) { alert('Could not update: ' + error.message); loadSheetData(); return; }
+  loadSheetData(); // re-render so the Custom Plan average reflects the change
+}
+
+async function addBasePlan() {
+  const label = (prompt('New base plan name (e.g. "Bonaire"):') || '').trim();
+  if (!label) return;
+  const key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!key) { alert('That name has no usable characters — try again with letters or numbers.'); return; }
+  if (ALL_HOUSES.some(h => h.key === key)) { alert('A base plan with that name already exists.'); return; }
+  const sortOrder = ALL_HOUSES.length ? Math.max(...ALL_HOUSES.map(h => h.sort_order)) + 1 : 1;
+  const { error } = await sb.from('houses').insert({ key, label, sort_order: sortOrder });
+  if (error) { alert('Could not add base plan: ' + error.message); return; }
+  await loadHouses();
+  alert(label + ' added. It has no cost data yet — each item will show $0 until house_rates rows are added for it.');
+}
 
 function switchSheetTab(tabName, el) {
   activeTab = tabName;
@@ -508,10 +542,11 @@ async function loadSheetData() {
     return;
   }
 
-  // Determine house model tab mapping
-  let currentHouse = 'kiawah';
-  if (activeTab.includes('SANIBEL')) currentHouse = 'sanibel';
-  if (activeTab.includes('VERO')) currentHouse = 'vero';
+  // Determine house model tab mapping — matched against the live houses
+  // list (loadHouses()), not a hardcoded name check, so any base plan
+  // added via "+ Add Base Plan" works here automatically.
+  const matchedHouse = ALL_HOUSES.find(h => activeTab === `2026 MASTER PLAN ${h.label.toUpperCase()}`);
+  let currentHouse = matchedHouse ? matchedHouse.key : ALL_HOUSES[0]?.key || 'kiawah';
 
   const { data } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
   if (!data) return;
@@ -651,19 +686,20 @@ async function loadSheetData() {
     let unitFormulaStr = '';
 
     if (activeTab === '2026 CUSTOM PLAN') {
-      // 2026 CUSTOM PLAN is computed by taking the average unit rate of the 3 reference house models (Kiawah, Sanibel, Vero)
-      const hrK = (r.house_rates || []).find(h => h.house === 'kiawah');
-      const hrS = (r.house_rates || []).find(h => h.house === 'sanibel');
-      const hrV = (r.house_rates || []).find(h => h.house === 'vero');
-
-      const uK = (hrK && hrK.quantity > 0) ? (hrK.amount / hrK.quantity) : (hrK?.amount || 0);
-      const uS = (hrS && hrS.quantity > 0) ? (hrS.amount / hrS.quantity) : (hrS?.amount || 0);
-      const uV = (hrV && hrV.quantity > 0) ? (hrV.amount / hrV.quantity) : (hrV?.amount || 0);
-
-      unitCost = (uK + uS + uV) / 3;
+      // 2026 CUSTOM PLAN is computed by averaging the unit rate of every
+      // base plan house_rates row where include_in_average is true — not
+      // hardcoded to 3 houses. A house that's never had its rate entered
+      // for this item (no house_rates row at all) is skipped too, same as
+      // one explicitly excluded.
+      const includedRates = (r.house_rates || []).filter(h => h.include_in_average);
+      const unitCosts = includedRates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
+      unitCost = unitCosts.length ? (unitCosts.reduce((s, v) => s + v, 0) / unitCosts.length) : 0;
       qtyVal = evaluateQuantityFormula(r.quantity_formula, jq);
       amtVal = unitCost * qtyVal;
-      unitFormulaStr = '=AVERAGE(\'2026 MASTER PLAN KIAWAH\'!F' + rowNum + ', \'2026 MASTER PLAN SANIBEL\'!F' + rowNum + ', \'2026 MASTER PLAN VERO\'!F' + rowNum + ')';
+      const includedLabels = includedRates
+        .map(h => ALL_HOUSES.find(hh => hh.key === h.house)?.label || h.house)
+        .map(l => `'2026 MASTER PLAN ${l.toUpperCase()}'!F${rowNum}`);
+      unitFormulaStr = includedLabels.length ? ('=AVERAGE(' + includedLabels.join(', ') + ')') : '(no houses included)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
       qtyVal    = houseRate ? houseRate.quantity : 0;
@@ -715,6 +751,10 @@ async function loadSheetData() {
           ? `<button class="pencil-btn" title="Edit Unit Cost Formula" onclick="openEditModal('cost_items', ${r.id}, 'unit_cost_formula', '${safeName}', 'Unit Cost Formula', '${safeUnitF}', '${safeUnitF}')">✏️</button>`
           : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
         }
+        ${(activeTab !== '2026 CUSTOM PLAN' && houseRate) ? `
+        <label title="Count this house toward the Custom Plan average unit cost for this item" style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#5f6368;margin-left:4px;cursor:pointer;">
+          <input type="checkbox" ${houseRate.include_in_average ? 'checked' : ''} onchange="toggleIncludeInAverage(${houseRate.id}, this.checked)"> avg
+        </label>` : ''}
       </td>
       ${hijCellsFor(rowNum)}
     `;
