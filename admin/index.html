@@ -137,6 +137,7 @@
     <div class="tab-item" onclick="switchSheetTab('SALES NOTES', this)">SALES NOTES</div>
     <div class="tab-item" onclick="switchSheetTab('TEMPLATE', this)">TEMPLATE</div>
     <div class="tab-item" onclick="switchSheetTab('SALES VERSION', this)">SALES VERSION</div>
+    <div class="tab-item" onclick="switchSheetTab('NOTIFICATIONS', this)">NOTIFICATIONS</div>
   </div>
 </div>
 
@@ -369,6 +370,32 @@ async function loadSheetData() {
       `;
       tbody.appendChild(tr);
     });
+    return;
+  }
+
+  if (activeTab === 'NOTIFICATIONS') {
+    const { data: notifyData } = await sb.from('notification_settings').select('*').eq('id', 1).single();
+    let rowIdxN = 1;
+    let trNotifyHdr = document.createElement('tr');
+    trNotifyHdr.className = 'col-hdr';
+    trNotifyHdr.innerHTML = `<td class="row-hdr">${rowIdxN++}</td><td colspan="6">CUSTOM PRICING NOTIFICATION</td>`;
+    tbody.appendChild(trNotifyHdr);
+
+    if (notifyData) {
+      const safeEmail = (notifyData.recipient_email || '').replace(/'/g, "\\'");
+      let trNotify = document.createElement('tr');
+      let notifyRow = rowIdxN++;
+      trNotify.innerHTML = `
+        <td class="row-hdr" style="text-align:center;">${notifyRow}</td>
+        <td colspan="3"><strong>Recipient Email(s)</strong></td>
+        <td colspan="2">${notifyData.recipient_email || '(not set)'} <button class="pencil-btn" onclick="openEditModal('notification_settings', ${notifyData.id}, 'recipient_email', 'Recipient Email(s)', 'Recipient Email(s)', '${safeEmail}', '${safeEmail}')">✏️</button></td>
+        <td></td>
+      `;
+      tbody.appendChild(trNotify);
+      let trHint = document.createElement('tr');
+      trHint.innerHTML = `<td class="row-hdr"></td><td colspan="6" style="color:#5f6368;font-size:11px;">Comma-separate multiple addresses. Sent when the webpage's "Notify Estimator of Custom Pricing Needed" toggle is on at Write to Estimate.</td>`;
+      tbody.appendChild(trHint);
+    }
     return;
   }
 
