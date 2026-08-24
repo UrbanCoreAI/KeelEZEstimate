@@ -318,7 +318,7 @@ async function confirmEdit() {
     return;
   }
 
-  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier'];
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier', 'markup_percent'];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
@@ -470,6 +470,29 @@ async function loadSheetData() {
         `;
         tbody.appendChild(tr);
       });
+    }
+
+    // Markup Percent — a single global percentage written onto every
+    // BuilderTrend line item during Write to Estimate, replacing
+    // whatever BuilderTrend's own template defaults to. Singleton row
+    // (id=1), same edit pattern as the sections above. See
+    // supabase-migrations/08_markup_settings.sql for the schema/RLS.
+    const { data: markupData } = await sb.from('markup_settings').select('*').eq('id', 1).single();
+    if (markupData) {
+      let trMarkupHdr = document.createElement('tr');
+      trMarkupHdr.className = 'col-hdr';
+      trMarkupHdr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="6">MARKUP</td>`;
+      tbody.appendChild(trMarkupHdr);
+
+      let trMarkup = document.createElement('tr');
+      let markupRow = rowIdx++;
+      trMarkup.innerHTML = `
+        <td class="row-hdr" style="text-align:center;">${markupRow}</td>
+        <td colspan="3"><strong>Markup Percent</strong></td>
+        <td colspan="2">${markupData.markup_percent}% <button class="pencil-btn" onclick="openEditModal('markup_settings', ${markupData.id}, 'markup_percent', 'Markup Percent', 'Markup Percent', '=MARKUP_PERCENT', '${markupData.markup_percent}')">✏️</button></td>
+        <td></td>
+      `;
+      tbody.appendChild(trMarkup);
     }
 
     // Unfinished/Finished SF (B5/B6) and the Grand Total ($, B7) — all
