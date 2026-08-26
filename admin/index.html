@@ -253,6 +253,14 @@ sb.auth.onAuthStateChange((event, session) => {
 // The list of base plans (Kiawah, Sanibel, Vero, and any added later) lives
 // in the "houses" table, not hardcoded here — this is what makes adding a
 // new base plan a data change instead of a code change.
+// The house's real Sheet tab name — tab_name if the 11_house_tab_name.sql
+// migration has run and this row has one, otherwise the old assumed
+// "2026 MASTER PLAN <LABEL>" pattern (kept as a fallback so nothing
+// breaks if that migration hasn't been applied yet).
+function houseTabName(h) {
+  return h.tab_name || `2026 MASTER PLAN ${h.label.toUpperCase()}`;
+}
+
 let ALL_HOUSES = [];
 async function loadHouses() {
   const { data, error } = await sb.from('houses').select('*').order('sort_order');
@@ -260,7 +268,7 @@ async function loadHouses() {
   ALL_HOUSES = data || [];
   const slot = document.getElementById('house-tabs-slot');
   slot.innerHTML = ALL_HOUSES.map(h =>
-    `<div class="tab-item" onclick="switchSheetTab('2026 MASTER PLAN ${h.label.toUpperCase()}', this)">2026 MASTER PLAN ${h.label.toUpperCase()}</div>`
+    `<div class="tab-item" onclick="switchSheetTab('${houseTabName(h).replace(/'/g, "\\'")}', this)">${houseTabName(h)}</div>`
   ).join('');
 }
 
@@ -277,7 +285,7 @@ async function addBasePlan() {
   if (!key) { alert('That name has no usable characters — try again with letters or numbers.'); return; }
   if (ALL_HOUSES.some(h => h.key === key)) { alert('A base plan with that name already exists.'); return; }
   const sortOrder = ALL_HOUSES.length ? Math.max(...ALL_HOUSES.map(h => h.sort_order)) + 1 : 1;
-  const { error } = await sb.from('houses').insert({ key, label, sort_order: sortOrder });
+  const { error } = await sb.from('houses').insert({ key, label, sort_order: sortOrder, tab_name: '2026 MASTER PLAN ' + label.toUpperCase() });
   if (error) { alert('Could not add base plan: ' + error.message); return; }
   await loadHouses();
   alert(label + ' added. It has no cost data yet — each item will show $0 until house_rates rows are added for it.');
@@ -604,7 +612,7 @@ async function loadSheetData() {
   // Determine house model tab mapping — matched against the live houses
   // list (loadHouses()), not a hardcoded name check, so any base plan
   // added via "+ Add Base Plan" works here automatically.
-  const matchedHouse = ALL_HOUSES.find(h => activeTab === `2026 MASTER PLAN ${h.label.toUpperCase()}`);
+  const matchedHouse = ALL_HOUSES.find(h => activeTab === houseTabName(h));
   let currentHouse = matchedHouse ? matchedHouse.key : ALL_HOUSES[0]?.key || 'kiawah';
 
   const { data } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
@@ -877,7 +885,7 @@ let importPreview = null; // { tab, rows: [{label, table, id, field, current, ne
 // (via "+ Add Base Plan") is importable without a page reload.
 function getHouseTabs() {
   const map = {};
-  ALL_HOUSES.forEach(h => { map[h.key] = `2026 MASTER PLAN ${h.label.toUpperCase()}`; });
+  ALL_HOUSES.forEach(h => { map[h.key] = houseTabName(h); });
   return map;
 }
 
@@ -1072,7 +1080,12 @@ function findRowByName(rows, name) {
 
 // A tab is only importable if its name matches something the system
 // already tracks — this never changes what gets read, only which of the
-// real tabs (from fetchSheetTabNames) we know how to interpret.
+// real tabs (from fetchSheetTabNames) we know how to interpret. The one
+// exception: a tab shaped like "<YEAR> MASTER PLAN <NAME>" that ISN'T
+// already a known house is very likely a new base plan someone just
+// added to the Sheet — flagged distinctly so the Import UI can offer to
+// add it as a house instead of silently skipping it as unrecognized.
+const NEW_BASE_PLAN_RE = /^(\d{4})\s+MASTER PLAN\s+(.+)$/i;
 function classifyTab(tabName) {
   if (tabName === CUSTOM_TAB) return { type: 'custom' };
   const houseTabs = getHouseTabs();
@@ -1080,6 +1093,13 @@ function classifyTab(tabName) {
   if (house) return { type: 'house', house };
   if (tabName === SITE_TAB) return { type: 'site' };
   if (tabName === ADDITIONAL_PRICING_TAB) return { type: 'additional' };
+  const m = tabName.match(NEW_BASE_PLAN_RE);
+  if (m) {
+    const name = m[2].trim();
+    const label = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+    const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return { type: 'new_base_plan', year: m[1], name, guessedLabel: label, guessedKey: key };
+  }
   return { type: 'unknown' };
 }
 
@@ -1273,20 +1293,48 @@ async function loadCombinedImportPreview() {
     const token = await getSheetsAccessToken();
     let rows = [];
     const skippedUnknown = [];
+    const detectedNewBasePlans = [];
     const tabDataByTab = {};
     for (const tabName of selectedTabNames) {
       const classified = classifyTab(tabName);
       if (classified.type === 'unknown') { skippedUnknown.push(tabName); continue; }
+      if (classified.type === 'new_base_plan') { detectedNewBasePlans.push({ tabName, ...classified }); continue; }
       const { rows: tabRows, tabInfo } = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
       tabRows.forEach(r => { r.tab = tabName; });
       rows = rows.concat(tabRows);
       if (tabInfo) tabDataByTab[tabName] = tabInfo;
     }
-    importPreview = { rows, skippedUnknown, tabDataByTab };
+    importPreview = { rows, skippedUnknown, detectedNewBasePlans, tabDataByTab };
     renderImportPreview();
   } catch (e) {
     body.innerHTML = '<p style="color:#d93025;">Error loading selected tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
   }
+}
+
+// Called from the "Add as base plan" button on a detected "<YEAR> MASTER
+// PLAN <NAME>" tab. Inserts the house (with its real tab_name so future
+// lookups aren't tied to any assumed year), refreshes ALL_HOUSES so
+// classifyTab()/getHouseTabs() immediately recognize it, then builds and
+// merges that tab's rows into the current preview exactly like any other
+// selected house tab — no need to restart the whole import.
+async function confirmNewBasePlan(tabName) {
+  const entry = (importPreview.detectedNewBasePlans || []).find(d => d.tabName === tabName);
+  if (!entry) return;
+  if (ALL_HOUSES.some(h => h.key === entry.guessedKey)) { alert('A base plan with key "' + entry.guessedKey + '" already exists — this is probably a naming collision, not a true duplicate. Check the houses list before retrying.'); return; }
+
+  const sortOrder = ALL_HOUSES.length ? Math.max(...ALL_HOUSES.map(h => h.sort_order)) + 1 : 1;
+  const { error } = await sb.from('houses').insert({ key: entry.guessedKey, label: entry.guessedLabel, sort_order: sortOrder, tab_name: tabName });
+  if (error) { alert('Could not add "' + entry.guessedLabel + '" as a base plan: ' + error.message); return; }
+  await loadHouses();
+
+  const classified = classifyTab(tabName); // now resolves to type 'house'
+  const token = await getSheetsAccessToken();
+  const { rows: tabRows, tabInfo } = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
+  tabRows.forEach(r => { r.tab = tabName; });
+  importPreview.rows = importPreview.rows.concat(tabRows);
+  if (tabInfo) importPreview.tabDataByTab[tabName] = tabInfo;
+  importPreview.detectedNewBasePlans = importPreview.detectedNewBasePlans.filter(d => d.tabName !== tabName);
+  renderImportPreview();
 }
 
 // Everything that used to be inline in loadImportPreview() for a single
@@ -1386,7 +1434,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
 function renderImportPreview() {
   const body = document.getElementById('import-modal-body');
   const confirmBtn = document.getElementById('import-confirm-btn');
-  const { rows, skippedUnknown } = importPreview;
+  const { rows, skippedUnknown, detectedNewBasePlans } = importPreview;
   const changed = rows.filter(r => r.changed);
   const importable = changed.filter(r => r.valid);
   // "Not found" items on a renamable table (cost_items/house_rates/
@@ -1402,6 +1450,21 @@ function renderImportPreview() {
 
   if (skippedUnknown && skippedUnknown.length) {
     html += '<p style="color:#5f6368;">Not recognized, skipped: ' + skippedUnknown.join(', ') + '.</p>';
+  }
+
+  // A tab shaped like "<YEAR> MASTER PLAN <NAME>" that isn't already a
+  // known house — offer to add it as a new base plan right here instead
+  // of just skipping it. Adding it immediately makes it show up in the
+  // extension's and public webpage's base-plan dropdowns too, since both
+  // already read the houses table live — nothing else to wire up.
+  if (detectedNewBasePlans && detectedNewBasePlans.length) {
+    html += detectedNewBasePlans.map(d =>
+      '<div style="background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;">' +
+      `<strong>"${d.tabName}" looks like a new base plan</strong> — not yet in the houses table.<br>` +
+      `Add it as <strong>${d.guessedLabel}</strong> (key: ${d.guessedKey})? It'll immediately show up in the extension's and webpage's base plan dropdowns, and this tab's pricing/measurements will be imported right after.` +
+      ` <button class="modal-btn btn-confirm" style="margin-top:6px;" onclick="confirmNewBasePlan('${d.tabName.replace(/'/g, "\\'")}')">Add "${d.guessedLabel}" as a base plan</button>` +
+      '</div>'
+    ).join('');
   }
 
   if (renamable.length) {
