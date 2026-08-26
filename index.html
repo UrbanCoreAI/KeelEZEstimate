@@ -341,6 +341,44 @@
       accent-color: var(--navy);
       cursor: pointer;
     }
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 34px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .lender-label .toggle-switch input[type="checkbox"] {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: #ccd2da;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .toggle-slider::before {
+      content: "";
+      position: absolute;
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform .15s;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--navy);
+    }
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(14px);
+    }
 
     .btn-go {
       height: 40px;
@@ -933,9 +971,6 @@
       <label for="plan-select">Load Base Plan:</label>
       <select id="plan-select" class="plan-select">
         <option value="">— Select a plan —</option>
-        <option value="KIAWAH">Kiawah</option>
-        <option value="SANIBEL">Sanibel</option>
-        <option value="VERO">Vero</option>
       </select>
       <span id="plan-status" class="plan-status hidden"></span>
     </div>
@@ -1258,8 +1293,11 @@
         Slow Connection
       </label>
       <label class="lender-label" title="When on, items checked 'Notify' above (custom allowances and basement SF entries) get their description marked 'Pricing is subject to change' and an email listing them is sent to the address set in the admin database's NOTIFICATIONS tab.">
-        <input type="checkbox" id="chk-notify-estimator">
-        Notify Estimator of Custom Pricing Needed
+        <span class="toggle-switch">
+          <input type="checkbox" id="chk-notify-estimator">
+          <span class="toggle-slider"></span>
+        </span>
+        Notify Estimator
       </label>
       <div class="est-row">
         <button id="btn-write-estimate" class="btn-estimate">Write to Estimate</button>
@@ -1786,11 +1824,25 @@ function planMsg(msg, cls) {
   planStatusEl.classList.remove('hidden');
 }
 
-// key ('KIAWAH'/'SANIBEL'/'VERO') -> reference_house_measurements.house.
-// This dropdown used to read the Sheet's Master Plan tabs directly; it now
-// reads from Supabase (see admin/index.html's "Seed Reference Houses"
-// button, which is what populates this table from the Sheet).
-const PLAN_KEY_TO_HOUSE = { KIAWAH: 'kiawah', SANIBEL: 'sanibel', VERO: 'vero' };
+// Base plans (houses) are read from Supabase's "houses" table — the same
+// table the admin page's tab bar and the extension's unit-cost lookups use
+// (see admin/index.html's ALL_HOUSES / ".houses" table, added when base
+// plans became dynamic instead of hardcoded to Kiawah/Sanibel/Vero). New
+// rows added there (Sullivan, Bonaire, Catalina, or any future
+// "2026 MASTER PLAN <NAME>" page) show up here automatically — nothing in
+// this file needs editing when a base plan is added.
+// house.key (e.g. 'kiawah') is used directly as both the option value and
+// the reference_house_measurements.house / house_rates.house lookup key.
+let ALL_HOUSES_WEB = [];
+async function loadBasePlanOptions() {
+  if (!sbClient) return;
+  const { data, error } = await sbClient.from('houses').select('*').order('sort_order');
+  if (error) { console.warn('[Keel] could not load base plans:', error.message); return; }
+  ALL_HOUSES_WEB = data || [];
+  const opts = ALL_HOUSES_WEB.map(h => `<option value="${h.key}">${h.label}</option>`).join('');
+  planSelect.innerHTML = '<option value="">— Select a plan —</option>' + opts;
+}
+loadBasePlanOptions();
 
 // data-key -> job_quantities/ROW_TO_FIELD field name (same mapping as
 // buildJobQuantitiesFromInputs, just inverted for prefilling the form).
@@ -1801,17 +1853,22 @@ Object.keys(CELL_MAP).forEach(k => {
   if (field) DATA_KEY_TO_FIELD[k] = field;
 });
 
+// Tracks which base plan (house key) is active, so Write to Estimate can
+// pull unit costs from that specific house's own rate instead of the
+// Custom-Plan-style average — see fetchUnitCostsFromSupabaseWeb below.
+// null = no base plan selected = use the average.
+let selectedBasePlanHouse = null;
+
 planSelect.addEventListener('change', async () => {
   const key = planSelect.value;
-  if (!key) return;
+  if (!key) { selectedBasePlanHouse = null; return; }
   if (!accessToken) { planMsg('Sign in first.', 'err'); planSelect.value = ''; return; }
   if (!sbClient) { planMsg('Supabase client failed to load.', 'err'); planSelect.value = ''; return; }
 
   planMsg('Loading…');
   try {
-    const house = PLAN_KEY_TO_HOUSE[key];
-    const { data, error } = await sbClient.from('reference_house_measurements').select('*').eq('house', house).single();
-    if (error || !data) throw new Error('Reference house "' + house + '" not found in Supabase — run "Seed Reference Houses" in the admin tool first.');
+    const { data, error } = await sbClient.from('reference_house_measurements').select('*').eq('house', key).single();
+    if (error || !data) throw new Error('Reference house "' + key + '" not found in Supabase — run "Seed Reference Houses" in the admin tool first.');
 
     document.querySelectorAll('.f-input').forEach(i => i.value = '');
     document.querySelectorAll('.f-input').forEach(inp => {
@@ -1819,12 +1876,68 @@ planSelect.addEventListener('change', async () => {
       const val = field ? Number(data[field]) || 0 : 0;
       if (val > 0) inp.value = val;
     });
-    planMsg('✓ ' + key.charAt(0) + key.slice(1).toLowerCase() + ' loaded', 'ok');
+    selectedBasePlanHouse = key;
+    const label = (ALL_HOUSES_WEB.find(h => h.key === key) || {}).label || key;
+    planMsg('✓ ' + label + ' loaded', 'ok');
     setTimeout(() => { planStatusEl.textContent = ''; planStatusEl.classList.add('hidden'); }, 2500);
   } catch(e) {
+    selectedBasePlanHouse = null;
     planMsg('Error: ' + e.message, 'err');
   }
 });
+
+// ── Unit costs (Supabase cost_items / house_rates) ─────────────────────────
+// Mirrors fetchUnitCostsFromSupabase() in the extension's popup.js exactly
+// (same math: F = amount/quantity per house_rates row, averaged across
+// every row flagged include_in_average when no base plan is selected, or
+// pulled from that one house's own row when a base plan is selected) so
+// the webpage writes the same exact, un-rounded number the admin page
+// itself displays as column F — not a stale/rounded value BuilderTrend
+// already had. Standalone copy, not a shared import — same duplication
+// pattern as EXT_SITE_MAP/TK_SITE_MAP in the extension repo.
+const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
+  'Appliance Allowance': 'Appliances Allowance',
+  'Cabinet Allowance': 'Cabinets Allowance',
+  'Carpet Allowance': 'Carpets Allowance',
+  'Countertop Allowance': 'Counterop Allowance',
+  'Hardwood Flooring Allowance': 'Hardwood Allowance',
+  'Tile Allowance': 'Tile Selection Allowance',
+  'Garage Door': 'Garage Overhead Doors'
+};
+
+async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
+  const lookupNames = itemNames.map(n => ITEM_NAME_TO_COST_ITEM_NAME_WEB[n] || n);
+  const uniqueNames = Array.from(new Set(lookupNames));
+
+  const { data: rows, error } = await sbClient
+    .from('cost_items')
+    .select('id,item_name,house_rates(house,amount,quantity,include_in_average)')
+    .in('item_name', uniqueNames);
+  if (error) throw new Error('Supabase cost_items read failed: ' + error.message);
+
+  const byLookupName = {};
+  (rows || []).forEach(r => { byLookupName[r.item_name] = r; });
+
+  function unitCostOf(hr) { return (hr.quantity > 0) ? (hr.amount / hr.quantity) : (hr.amount || 0); }
+
+  const result = {};
+  itemNames.forEach(originalName => {
+    const lookupName = ITEM_NAME_TO_COST_ITEM_NAME_WEB[originalName] || originalName;
+    const row = byLookupName[lookupName];
+    if (!row) { result[originalName] = undefined; return; }
+    const rates = row.house_rates || [];
+    if (selectedHouseKey) {
+      const hr = rates.find(h => h.house === selectedHouseKey);
+      result[originalName] = hr ? unitCostOf(hr) : undefined;
+    } else {
+      const included = rates.filter(h => h.include_in_average);
+      if (!included.length) { result[originalName] = undefined; return; }
+      const sum = included.reduce((s, h) => s + unitCostOf(h), 0);
+      result[originalName] = sum / included.length;
+    }
+  });
+  return result;
+}
 
 // ── Custom allowances — add row button ───────────────────────────────────────
 function makeCustomRow() {
@@ -1934,6 +2047,7 @@ btnClear.addEventListener('click', () => {
   document.querySelectorAll('.custom-input-name, .custom-input-desc, .custom-input-price').forEach(i => i.value = '');
   ['basement-finished-sf','basement-finished-desc','basement-unfinished-sf','basement-unfinished-desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   planSelect.value = '';
+  selectedBasePlanHouse = null;
   planStatusEl.textContent = '';
   planStatusEl.classList.add('hidden');
   hideStatus();
@@ -2075,6 +2189,23 @@ btnConfirm.addEventListener('click', async () => {
       const desc = tierDescription(tier);
       if (desc) item.description = desc;
     });
+
+    // Unit costs from Supabase — the exact column-F rate for every item,
+    // not just the allowances. A base plan selected above pulls THAT
+    // house's own rate; otherwise every item gets the Custom-Plan-style
+    // average. Mirrors the extension's own takeoff-workflow.js flow.
+    // Items with no matching cost_items row are left undefined so
+    // tabpicker.js knows to leave BuilderTrend's existing rate untouched
+    // rather than write a rounded/guessed value.
+    try {
+      const webUnitCosts = await fetchUnitCostsFromSupabaseWeb(items.map(it => it.name), selectedBasePlanHouse);
+      items.forEach(item => {
+        const uc = webUnitCosts[item.name];
+        if (uc !== undefined && uc !== null) item.unitCost = uc;
+      });
+    } catch (e) {
+      console.error('[Keel][unitcost] webpage: fetch threw, NO items got a unitCost this run.', e);
+    }
 
 // Custom-pricing-needed notification — webpage-only, never sent by the
     // extension's own popup/panel Write to Estimate buttons. When on, every
