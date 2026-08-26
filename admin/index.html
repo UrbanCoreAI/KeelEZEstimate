@@ -1100,10 +1100,38 @@ function pushRowIfChanged(rows, label, table, id, field, current, sheetRaw, vali
 }
 
 // A known item whose name text wasn't found anywhere in the tab at all —
-// distinct from a cell that's merely blank: the whole row is gone
-// (renamed, deleted, or moved), so nothing here can even guess a value.
-function pushMissingRow(rows, label, table, id, current, cellRef) {
-  rows.push({ label, table, id, field: null, current, next: '(not found)', valid: false, reason: 'item name not found anywhere in this tab', changed: true, numeric: false, cellRef });
+// distinct from a cell that's merely blank: the whole row is gone,
+// almost always because it was renamed/reworded in the Sheet (matching
+// is by exact text, not row position). candidateNames is every row name
+// actually present in this tab, for suggestSimilarNames() to search;
+// costItemId is only needed for table === 'house_rates', where the
+// renamable name lives on the shared cost_items row, not house_rates
+// itself.
+function pushMissingRow(rows, label, table, id, current, cellRef, candidateNames, costItemId) {
+  rows.push({
+    label, table, id, field: null, current, next: '(not found)', valid: false,
+    reason: 'item name not found anywhere in this tab', changed: true, numeric: false, cellRef,
+    key: table + '_' + id,
+    candidates: suggestSimilarNames(label.replace(/ — Amount$/, ''), candidateNames || []),
+    costItemId: costItemId === undefined ? id : costItemId
+  });
+}
+
+// Simple word-overlap match — good enough to surface "this is probably
+// what it's called now" without needing anything fancier. Case/
+// punctuation-insensitive, ranks by number of shared words, dedupes.
+function suggestSimilarNames(targetName, candidateNames) {
+  const clean = s => (s || '').toLowerCase().replace(/[().,]/g, '').split(/\s+/).filter(Boolean);
+  const targetWords = new Set(clean(targetName));
+  const seen = new Set();
+  return candidateNames
+    .map(n => (n || '').toString().trim())
+    .filter(n => n && !seen.has(n) && seen.add(n))
+    .map(n => ({ name: n, score: clean(n).filter(w => targetWords.has(w)).length }))
+    .filter(c => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(c => c.name);
 }
 
 let driveFilesCache = null;
@@ -1245,14 +1273,16 @@ async function loadCombinedImportPreview() {
     const token = await getSheetsAccessToken();
     let rows = [];
     const skippedUnknown = [];
+    const tabDataByTab = {};
     for (const tabName of selectedTabNames) {
       const classified = classifyTab(tabName);
       if (classified.type === 'unknown') { skippedUnknown.push(tabName); continue; }
-      const tabRows = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
+      const { rows: tabRows, tabInfo } = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
       tabRows.forEach(r => { r.tab = tabName; });
       rows = rows.concat(tabRows);
+      if (tabInfo) tabDataByTab[tabName] = tabInfo;
     }
-    importPreview = { rows, skippedUnknown };
+    importPreview = { rows, skippedUnknown, tabDataByTab };
     renderImportPreview();
   } catch (e) {
     body.innerHTML = '<p style="color:#d93025;">Error loading selected tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
@@ -1264,13 +1294,15 @@ async function loadCombinedImportPreview() {
 // selected tab and concatenate the results.
 async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   const rows = [];
+  let tabInfo = null;
 
   if (classified.type === 'custom') {
     const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
     const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${CUSTOM_TAB}'!B3:F250`]);
+    tabInfo = { type: 'custom', sheetRows };
     (costItems || []).forEach(item => {
       const rowIdx = findRowByName(sheetRows, item.item_name);
-      if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
+      if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null, sheetRows.map(r => r[0])); return; }
       const rowNum = rowIdx + 3;
       const sheetQty = (sheetRows[rowIdx][2] || '').toString();
       const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
@@ -1286,11 +1318,12 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const rateByItemId = {};
     (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
     const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
+    tabInfo = { type: 'house', house: classified.house, sheetRows };
     (costItems || []).forEach(item => {
       const hr = rateByItemId[item.id];
       if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
       const rowIdx = findRowByName(sheetRows, item.item_name);
-      if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null); return; }
+      if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null, sheetRows.map(r => r[0]), item.id); return; }
       const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
       pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
     });
@@ -1321,12 +1354,13 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   } else if (classified.type === 'site') {
     const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
     const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${SITE_TAB}'!A2:C150`]);
+    tabInfo = { type: 'site', sheetRows };
     (siteOptions || []).forEach(opt => {
       let rowIdx = -1;
       for (let i = 0; i < sheetRows.length; i++) {
         if (sheetRows[i][1] && String(sheetRows[i][1]).trim() === opt.option_label.trim() && sheetRows[i][0] && String(sheetRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
       }
-      if (rowIdx === -1) { pushMissingRow(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, opt.cost, null); return; }
+      if (rowIdx === -1) { pushMissingRow(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, opt.cost, null, sheetRows.map(r => r[1])); return; }
       const sheetCostRaw = (sheetRows[rowIdx][2] || '').toString();
       pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCostRaw, validateNumericCell(sheetCostRaw, opt.cost), true, 'C' + (rowIdx + 2));
     });
@@ -1346,7 +1380,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     }
   }
 
-  return rows;
+  return { rows, tabInfo };
 }
 
 function renderImportPreview() {
@@ -1355,7 +1389,13 @@ function renderImportPreview() {
   const { rows, skippedUnknown } = importPreview;
   const changed = rows.filter(r => r.changed);
   const importable = changed.filter(r => r.valid);
-  const issues = changed.filter(r => !r.valid);
+  // "Not found" items on a renamable table (cost_items/house_rates/
+  // site_options — reference_house_measurements' fixed label set isn't
+  // free-text, so it doesn't get the rename UI) get their own actionable
+  // section instead of sitting in the generic issue log — there's
+  // actually something to DO about these right here.
+  const renamable = changed.filter(r => !r.valid && r.field === null && r.table !== 'reference_house_measurements');
+  const issues = changed.filter(r => !r.valid && !renamable.includes(r));
   const tabCount = selectedTabNames.size;
 
   let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
@@ -1364,11 +1404,18 @@ function renderImportPreview() {
     html += '<p style="color:#5f6368;">Not recognized, skipped: ' + skippedUnknown.join(', ') + '.</p>';
   }
 
+  if (renamable.length) {
+    html += '<div style="background:#fef7e0;border:1px solid #f9ab00;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;">' +
+      '<strong>' + renamable.length + ' item(s) not found by name in this tab</strong> — matching is by exact text, so this almost always means it was renamed/reworded in the Sheet, not moved. ' +
+      'If you know what it\'s actually called now, type it below and check "Replace row" — this renames the stored item and imports that row\'s current value(s) together.' +
+      renamable.map(renderMissingRowControl).join('') +
+      '</div>';
+  }
+
   // Format-drift warning — cells that used to hold a number/formula and
-  // now don't (blank, or replaced with text), or a known item whose row
-  // is missing entirely. These are never imported; the "?" opens a
-  // plain-language summary (grouped by cause, item names listed) instead
-  // of a raw cell-by-cell dump.
+  // now don't (blank, or replaced with text). These are never imported;
+  // the "?" opens a plain-language summary (grouped by cause, item names
+  // listed) instead of a raw cell-by-cell dump.
   if (issues.length) {
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
       '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
@@ -1391,7 +1438,32 @@ function renderImportPreview() {
       '</table>';
   }
   body.innerHTML = html;
-  confirmBtn.style.display = importable.length ? 'inline-block' : 'none';
+  // Also shown with zero "ready to import" changes if there's at least
+  // one renamable not-found item — that's the only way to ever trigger
+  // a "Replace row" confirmation.
+  confirmBtn.style.display = (importable.length || renamable.length) ? 'inline-block' : 'none';
+}
+
+// One item's "not found" row — a text box (pre-filled with the best
+// guess, if any) plus clickable suggestion chips built from word-overlap
+// against every real name in the tab, and a "Replace row" checkbox.
+// confirmImport() reads these two DOM elements directly by r.key at
+// import time rather than tracking a parallel state object.
+function renderMissingRowControl(r) {
+  const inputId = 'replace-name-' + r.key;
+  const chkId = 'replace-chk-' + r.key;
+  const best = (r.candidates && r.candidates[0]) || '';
+  const chips = (r.candidates || []).map(c =>
+    `<span onclick="document.getElementById('${inputId}').value='${c.replace(/'/g, "\\'")}'" style="cursor:pointer;text-decoration:underline;color:#1a73e8;margin-right:8px;">${c}</span>`
+  ).join('');
+  return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #f2d67c;">` +
+    `<div><strong>${r.label.replace(/ — Amount$/, '')}</strong></div>` +
+    (chips ? `<div style="margin:4px 0;color:#5f6368;">Possible matches in the Sheet: ${chips}</div>` : '<div style="margin:4px 0;color:#5f6368;">No similar names found in this tab.</div>') +
+    `<label style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap;">` +
+    `<input type="checkbox" id="${chkId}">` +
+    `Replace row — it's now called:` +
+    `<input type="text" id="${inputId}" value="${best.replace(/"/g, '&quot;')}" placeholder="exact current name in the Sheet" style="flex:1;min-width:160px;padding:4px;border:1px solid #dadce0;border-radius:4px;">` +
+    `</label></div>`;
 }
 
 function toggleFormatLog() {
@@ -1442,6 +1514,60 @@ async function confirmImport() {
   confirmBtn.textContent = 'Importing…';
   const importable = importPreview.rows.filter(r => r.changed && r.valid);
   const results = [];
+
+  // "Replace row" confirmations for not-found items — read straight from
+  // the DOM (checkbox + typed name) while the controls still exist,
+  // rather than tracking a parallel state object. Renames the stored
+  // item to what it's actually called in the Sheet now, then imports
+  // that row's current value(s) the same way a normally-found row
+  // would, all in one go. tabDataByTab was captured when the preview was
+  // built, so this re-searches the same already-fetched Sheet data
+  // rather than re-fetching.
+  const renamable = importPreview.rows.filter(r => r.changed && !r.valid && r.field === null && r.table !== 'reference_house_measurements');
+  for (const r of renamable) {
+    const chk = document.getElementById('replace-chk-' + r.key);
+    const input = document.getElementById('replace-name-' + r.key);
+    if (!chk || !chk.checked || !input || !input.value.trim()) continue;
+    const newName = input.value.trim();
+    const tabInfo = importPreview.tabDataByTab[r.tab];
+    if (!tabInfo) { results.push('FAILED: ' + r.label + ' — internal error (missing tab data)'); continue; }
+
+    if (tabInfo.type === 'custom') {
+      const rowIdx = findRowByName(tabInfo.sheetRows, newName);
+      if (rowIdx === -1) { results.push('FAILED: ' + r.label + ' — "' + newName + '" not found in the Sheet either'); continue; }
+      const rowNum = rowIdx + 3;
+      const sheetQty = (tabInfo.sheetRows[rowIdx][2] || '').toString();
+      const sheetUnit = (tabInfo.sheetRows[rowIdx][4] || '').toString();
+      const updates = { item_name: newName };
+      if (validateQuantityFormula(sheetQty).valid) updates.quantity_formula = sheetQty;
+      if (validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)).valid) updates.unit_cost_formula = sheetUnit;
+      const { error } = await sb.from('cost_items').update(updates).eq('id', r.id);
+      results.push(error ? ('FAILED: rename ' + r.label + ' — ' + error.message) : ('Renamed + imported: "' + r.label + '" → "' + newName + '"'));
+    } else if (tabInfo.type === 'house') {
+      const rowIdx = findRowByName(tabInfo.sheetRows, newName);
+      if (rowIdx === -1) { results.push('FAILED: ' + r.label + ' — "' + newName + '" not found in the Sheet either'); continue; }
+      const sheetAmtRaw = (tabInfo.sheetRows[rowIdx][3] || '').toString();
+      const { error: renameErr } = await sb.from('cost_items').update({ item_name: newName }).eq('id', r.costItemId);
+      let amtErr = null;
+      if (validateNumericCell(sheetAmtRaw, 0).valid) {
+        const res = await sb.from('house_rates').update({ amount: Number(sheetAmtRaw) || 0 }).eq('id', r.id);
+        amtErr = res.error;
+      }
+      const err = renameErr || amtErr;
+      results.push(err ? ('FAILED: rename ' + r.label + ' — ' + err.message) : ('Renamed + imported: "' + r.label + '" → "' + newName + '"'));
+    } else if (tabInfo.type === 'site') {
+      let rowIdx = -1;
+      for (let i = 0; i < tabInfo.sheetRows.length; i++) {
+        if (tabInfo.sheetRows[i][1] && String(tabInfo.sheetRows[i][1]).trim() === newName) { rowIdx = i; break; }
+      }
+      if (rowIdx === -1) { results.push('FAILED: ' + r.label + ' — "' + newName + '" not found in the Sheet either'); continue; }
+      const sheetCostRaw = (tabInfo.sheetRows[rowIdx][2] || '').toString();
+      const updates = { option_label: newName };
+      if (validateNumericCell(sheetCostRaw, 0).valid) updates.cost = Number(sheetCostRaw) || 0;
+      const { error } = await sb.from('site_options').update(updates).eq('id', r.id);
+      results.push(error ? ('FAILED: rename ' + r.label + ' — ' + error.message) : ('Renamed + imported: "' + r.label + '" → "' + newName + '"'));
+    }
+  }
 
   // reference_house_measurements is keyed by "house" (text), not an
   // "id" row — and a brand-new base plan has no row there yet, so this
