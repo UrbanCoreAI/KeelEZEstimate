@@ -1361,21 +1361,25 @@ function renderImportPreview() {
   const confirmBtn = document.getElementById('import-confirm-btn');
   const { rows, skippedUnknown, detectedNewBasePlans } = importPreview;
   const changed = rows.filter(r => r.changed);
-  // "Not found" items on a renamable table (cost_items/house_rates/
-  // site_options — reference_house_measurements' fixed label set isn't
-  // free-text, so it doesn't get the rename UI) get their own actionable
-  // section instead of sitting in the generic issue log — there's
-  // actually something to DO about these right here. Never
-  // auto-imported regardless of the override toggle below — there's no
-  // sheet value to write for a row that was never found in the first
-  // place, "override" has nothing to act on.
-  const renamable = changed.filter(r => !r.valid && r.field === null && r.table !== 'reference_house_measurements');
-  const issues = changed.filter(r => !r.valid && !renamable.includes(r));
+  // "Not found" rows (field === null — the whole item's row is missing,
+  // not just one cell) are NEVER importable no matter what — there's no
+  // Sheet value to write for a row that was never found. Split into
+  // renamable (cost_items/house_rates/site_options — gets the
+  // interactive "Replace row" UI) and unhandledMissing
+  // (reference_house_measurements — fixed label set, no free-text rename
+  // UI, shown informationally in the same issue log but never writable).
+  const missing = changed.filter(r => !r.valid && r.field === null);
+  const renamable = missing.filter(r => r.table !== 'reference_house_measurements');
+  const unhandledMissing = missing.filter(r => r.table === 'reference_house_measurements');
   // Format-drift cells (blank/non-numeric where a number was expected, a
-  // formula that doesn't match) default to being written anyway — the
-  // Sheet is treated as the source of truth even when it looks off —
-  // with a toggle to fall back to the safer skip-them behavior instead.
-  const importable = changed.filter(r => r.valid).concat(skipFormatIssues ? [] : issues);
+  // formula that doesn't match) on a cell that WAS found default to
+  // being written anyway — the Sheet is treated as the source of truth
+  // even when it looks off — with a toggle to fall back to the safer
+  // skip-them behavior instead. This must exactly match confirmImport()'s
+  // own write filter (r.field !== null) or the preview lies about what
+  // Confirm Import will actually do.
+  const issues = changed.filter(r => !r.valid && r.field !== null).concat(unhandledMissing);
+  const importable = changed.filter(r => r.valid).concat(skipFormatIssues ? [] : issues.filter(r => r.field !== null));
   const tabCount = selectedTabNames.size;
 
   let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
@@ -1408,24 +1412,30 @@ function renderImportPreview() {
   }
 
   // Format-drift warning — cells that used to hold a number/formula and
-  // now don't (blank, or replaced with text). Written anyway by default
-  // (skipFormatIssues starts false each time the modal opens); the
-  // toggle switches to excluding them instead. The "?" opens a
-  // plain-language summary (grouped by cause, item names listed) instead
-  // of a raw cell-by-cell dump, either way.
+  // now don't (blank, or replaced with text). Cells that WERE found
+  // (field !== null) are written anyway by default; the toggle switches
+  // to excluding them instead. "Not found" rows (field === null —
+  // reference_house_measurements only, at this point; the other tables'
+  // missing rows have their own Replace-row section above) are folded
+  // into the same log for visibility but are NEVER importable — there's
+  // no sheet cell to write for a row that doesn't exist, so the toggle
+  // has nothing to act on for those.
+  const writableIssues = issues.filter(r => r.field !== null);
   if (issues.length) {
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
-      '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right' + (skipFormatIssues ? ' and were skipped' : ' — will be written anyway') + '</strong> — formatting differs from what Write to Estimate/the database expects.' +
+      (writableIssues.length ? '<strong>⚠ ' + writableIssues.length + ' cell(s) don\'t look right' + (skipFormatIssues ? ' and were skipped' : ' — will be written anyway') + '</strong>' : '') +
+      (writableIssues.length && unhandledMissing.length ? ', plus ' : '') +
+      (unhandledMissing.length ? '<strong>' + unhandledMissing.length + ' reference measurement(s) not found</strong> (never importable — nothing to write)' : '') +
       ' <span onclick="toggleFormatLog()" title="Show summary" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
-      '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;">' +
-      `<input type="checkbox" ${skipFormatIssues ? 'checked' : ''} onchange="setSkipFormatIssues(this.checked)"> Skip these instead of writing them` +
-      '</label>' +
+      (writableIssues.length ? '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;">' +
+        `<input type="checkbox" ${skipFormatIssues ? 'checked' : ''} onchange="setSkipFormatIssues(this.checked)"> Skip these instead of writing them` +
+        '</label>' : '') +
       '<div id="import-format-log" style="display:none;margin-top:8px;font-size:12px;">' +
       renderFormatIssueSummary(issues) +
       '</div></div>';
   }
 
-  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (issues.length ? (skipFormatIssues ? `, ${issues.length} skipped (see above)` : `, including ${issues.length} overridden (see above)`) : '') + `:</p>`;
+  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (writableIssues.length ? (skipFormatIssues ? `, ${writableIssues.length} skipped (see above)` : `, including ${writableIssues.length} overridden (see above)`) : '') + `:</p>`;
   if (!changed.length) {
     html += '<p>Nothing has changed — Supabase already matches the selected tab(s).</p>';
   } else if (importable.length) {
