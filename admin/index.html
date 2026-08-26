@@ -148,9 +148,12 @@
   <div class="modal" style="width:640px;max-height:75vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <h3 id="import-modal-title" style="margin:0;">Import from Sheet</h3>
-      <button id="import-confirm-btn" class="modal-btn btn-confirm" onclick="confirmImport()" style="display:none;">Confirm Import</button>
+      <span>
+        <button id="import-selectall-btn" class="modal-btn btn-cancel" onclick="toggleSelectAllTabs()" style="display:none;">Select All</button>
+        <button id="import-confirm-btn" class="modal-btn btn-confirm" onclick="confirmImport()" style="display:none;">Confirm Import</button>
+      </span>
     </div>
-    <input id="import-search" type="text" placeholder="Search sheet tabs…" oninput="renderImportTabList()"
+    <input id="import-search" type="text" placeholder="Search your Google Sheets…" oninput="onImportSearchInput()"
            style="width:100%;padding:8px;font-size:13px;border:1px solid #dadce0;border-radius:4px;margin-bottom:10px;box-sizing:border-box;">
     <div id="import-modal-body" style="font-size:12px;line-height:1.6;"></div>
     <div class="modal-actions">
@@ -962,7 +965,11 @@ function getSheetsAccessToken() {
     if (!window.google || !google.accounts) { reject(new Error('Google Identity Services not loaded yet — try again in a moment.')); return; }
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      // drive.readonly (metadata-only file listing) is needed for Import
+      // from Sheet's Drive file picker, on top of the spreadsheets scope
+      // everything else here already used. Existing signed-in admins will
+      // be asked to re-consent once, the first time this loads for them.
+      scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly',
       callback: (resp) => {
         sheetsTokenRequestInFlight = null;
         if (resp.error) { reject(new Error(resp.error)); return; }
@@ -975,9 +982,12 @@ function getSheetsAccessToken() {
   return sheetsTokenRequestInFlight;
 }
 
-async function sheetsGet(token, ranges) {
+// spreadsheetId is explicit (not the fixed SHEET_ID constant, which the
+// admin page's own main grid still always reads) — Import from Sheet can
+// point at ANY spreadsheet the signed-in user picks from their Drive.
+async function sheetsGet(token, spreadsheetId, ranges) {
   const q = ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&');
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values:batchGet?' + q + '&valueRenderOption=FORMULA', {
+  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '/values:batchGet?' + q + '&valueRenderOption=FORMULA', {
     headers: { Authorization: 'Bearer ' + token }
   });
   const body = await res.json();
@@ -985,18 +995,39 @@ async function sheetsGet(token, ranges) {
   return body.valueRanges.map(vr => vr.values || []);
 }
 
-// The REAL list of tabs currently in the spreadsheet (not a synthetic
-// list built from what we already know about) — so a renamed tab, an
-// extra tab someone added, or a typo shows up in the picker exactly as
-// it exists in Drive right now.
-async function fetchSheetTabNames() {
+// The REAL list of tabs currently in the given spreadsheet (not a
+// synthetic list built from what we already know about) — so a renamed
+// tab, an extra tab someone added, or a typo shows up in the picker
+// exactly as it exists in Drive right now.
+async function fetchSheetTabNames(spreadsheetId) {
   const token = await getSheetsAccessToken();
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '?fields=sheets.properties.title', {
+  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '?fields=sheets.properties.title', {
     headers: { Authorization: 'Bearer ' + token }
   });
   const body = await res.json();
   if (!res.ok) throw new Error('Could not list sheet tabs: ' + JSON.stringify(body));
   return (body.sheets || []).map(s => s.properties.title);
+}
+
+// The user's own Google Sheets files — "Import from Sheet" starts here
+// now instead of jumping straight to this app's one canonical sheet, so
+// it can pull from a personal copy/duplicate someone made too. Fetched
+// once per modal open (most-recently-modified first) and filtered
+// client-side as the user types, same pattern as the tab list below.
+async function fetchDriveSpreadsheets() {
+  const token = await getSheetsAccessToken();
+  const params = new URLSearchParams({
+    q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+    fields: 'files(id,name)',
+    pageSize: '100',
+    orderBy: 'modifiedTime desc'
+  });
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?' + params.toString(), {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error('Could not list your Google Sheets: ' + JSON.stringify(body));
+  return body.files || [];
 }
 
 function findRowByName(rows, name) {
@@ -1042,23 +1073,35 @@ function pushMissingRow(rows, label, table, id, current, cellRef) {
   rows.push({ label, table, id, field: null, current, next: '(not found)', valid: false, reason: 'item name not found anywhere in this tab', changed: true, numeric: false, cellRef });
 }
 
+let driveFilesCache = null;
 let realSheetTabsCache = null;
+let selectedSpreadsheetId = null;
+let selectedSpreadsheetName = null;
+let selectedTabNames = new Set();
+let importStep = 'files'; // 'files' -> 'tabs' -> 'preview'
 
 async function openImportModal() {
   importPreview = null;
+  driveFilesCache = null;
   realSheetTabsCache = null;
+  selectedSpreadsheetId = null;
+  selectedSpreadsheetName = null;
+  selectedTabNames = new Set();
+  importStep = 'files';
   const search = document.getElementById('import-search');
   search.value = '';
   search.style.display = '';
+  search.placeholder = 'Search your Google Sheets…';
   document.getElementById('import-confirm-btn').style.display = 'none';
+  document.getElementById('import-selectall-btn').style.display = 'none';
   document.getElementById('import-modal').classList.add('active');
   const body = document.getElementById('import-modal-body');
-  body.innerHTML = '<p>Loading sheet tabs from Google Drive…</p>';
+  body.innerHTML = '<p>Loading your Google Sheets from Drive…</p>';
   try {
-    realSheetTabsCache = await fetchSheetTabNames();
-    renderImportTabList();
+    driveFilesCache = await fetchDriveSpreadsheets();
+    renderDriveFileList();
   } catch (e) {
-    body.innerHTML = '<p style="color:#d93025;">Could not load sheet tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">Retry</button>';
+    body.innerHTML = '<p style="color:#d93025;">Could not load your Google Sheets: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">Retry</button>';
   }
 }
 
@@ -1067,134 +1110,225 @@ function closeImportModal() {
   importPreview = null;
 }
 
-function renderImportTabList() {
+// The search box is shared across the file-list and tab-checklist steps —
+// dispatches to whichever one is currently showing.
+function onImportSearchInput() {
+  if (importStep === 'files') renderDriveFileList();
+  else if (importStep === 'tabs') renderTabCheckboxList();
+}
+
+function renderDriveFileList() {
+  importStep = 'files';
+  document.getElementById('import-selectall-btn').style.display = 'none';
+  document.getElementById('import-confirm-btn').style.display = 'none';
   const q = (document.getElementById('import-search').value || '').toLowerCase();
   const body = document.getElementById('import-modal-body');
-  const matches = (realSheetTabsCache || []).filter(name => name.toLowerCase().includes(q));
-  if (!matches.length) { body.innerHTML = '<p>No matching sheet tabs.</p>'; return; }
+  const matches = (driveFilesCache || []).filter(f => f.name.toLowerCase().includes(q));
+  if (!matches.length) { body.innerHTML = '<p>No matching Google Sheets in your Drive.</p>'; return; }
   body.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' +
-    matches.map(name => `<li style="padding:8px;border-bottom:1px solid #eee;cursor:pointer;" onclick="loadImportPreview('${name.replace(/'/g, "\\'")}')">${name}</li>`).join('') +
+    matches.map(f => `<li style="padding:8px;border-bottom:1px solid #eee;cursor:pointer;" onclick="selectDriveFile('${f.id}', '${f.name.replace(/'/g, "\\'")}')">${f.name}</li>`).join('') +
     '</ul>';
 }
 
-// Reads one tab's current values straight from the Sheet (same ranges/
-// column layout the old sync tool used) and compares each KNOWN row
-// (matched by name, same findRowByName as before) against what's in
-// Supabase now. Nothing is written here — loadImportPreview only builds
-// the preview; confirmImport does the actual write.
-async function loadImportPreview(tabName) {
+async function selectDriveFile(fileId, fileName) {
+  selectedSpreadsheetId = fileId;
+  selectedSpreadsheetName = fileName;
+  selectedTabNames = new Set();
   const body = document.getElementById('import-modal-body');
-  body.innerHTML = '<p>Loading "' + tabName + '" from the Sheet…</p>';
-  document.getElementById('import-search').style.display = 'none';
-  document.getElementById('import-confirm-btn').style.display = 'none';
-
-  const classified = classifyTab(tabName);
-  if (classified.type === 'unknown') {
-    body.innerHTML = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>' +
-      '<p>"' + tabName + '" isn\'t a tab Write to Estimate or the database reads from — there\'s nothing recognized here to import.</p>';
-    return;
+  body.innerHTML = '<p>Loading tabs from "' + fileName + '"…</p>';
+  try {
+    realSheetTabsCache = await fetchSheetTabNames(fileId);
+    renderTabCheckboxList();
+  } catch (e) {
+    body.innerHTML = '<p style="color:#d93025;">Could not load tabs from "' + fileName + '": ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">‹ Back to Sheets list</button>';
   }
+}
+
+function renderTabCheckboxList() {
+  importStep = 'tabs';
+  const search = document.getElementById('import-search');
+  search.placeholder = 'Search tabs in "' + selectedSpreadsheetName + '"…';
+  document.getElementById('import-selectall-btn').style.display = 'inline-block';
+  document.getElementById('import-selectall-btn').textContent = allVisibleTabsSelected() ? 'Select None' : 'Select All';
+  document.getElementById('import-confirm-btn').style.display = 'none';
+  const q = (search.value || '').toLowerCase();
+  const body = document.getElementById('import-modal-body');
+  const matches = (realSheetTabsCache || []).filter(name => name.toLowerCase().includes(q));
+
+  let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to Sheets list</button>';
+  html += '<p><strong>' + selectedSpreadsheetName + '</strong> — pick which tab(s) to sync:</p>';
+  if (!matches.length) {
+    html += '<p>No matching tabs.</p>';
+  } else {
+    html += '<ul style="list-style:none;padding:0;margin:0 0 12px;">' +
+      matches.map(name => {
+        const checked = selectedTabNames.has(name) ? 'checked' : '';
+        const safe = name.replace(/'/g, "\\'");
+        return `<li style="padding:6px 4px;border-bottom:1px solid #eee;">` +
+          `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">` +
+          `<input type="checkbox" ${checked} onchange="toggleTabSelected('${safe}', this.checked)"> ${name}` +
+          `</label></li>`;
+      }).join('') + '</ul>';
+    html += `<button class="modal-btn btn-confirm" onclick="loadCombinedImportPreview()" ${selectedTabNames.size ? '' : 'disabled'}>Load Preview (${selectedTabNames.size} selected) →</button>`;
+  }
+  body.innerHTML = html;
+}
+
+function allVisibleTabsSelected() {
+  return (realSheetTabsCache || []).length > 0 && (realSheetTabsCache || []).every(name => selectedTabNames.has(name));
+}
+
+function toggleTabSelected(name, checked) {
+  if (checked) selectedTabNames.add(name); else selectedTabNames.delete(name);
+  document.getElementById('import-selectall-btn').textContent = allVisibleTabsSelected() ? 'Select None' : 'Select All';
+  const btn = document.querySelector('#import-modal-body .btn-confirm');
+  if (btn) {
+    btn.textContent = `Load Preview (${selectedTabNames.size} selected) →`;
+    btn.disabled = !selectedTabNames.size;
+  }
+}
+
+function toggleSelectAllTabs() {
+  if (allVisibleTabsSelected()) selectedTabNames = new Set();
+  else (realSheetTabsCache || []).forEach(name => selectedTabNames.add(name));
+  renderTabCheckboxList();
+}
+
+// Reads every SELECTED tab's current values straight from the Sheet
+// (same ranges/column layout the old sync tool used) and compares each
+// KNOWN row (matched by name, same findRowByName as before) against
+// what's in Supabase now. Nothing is written here — this only builds
+// the combined preview across all selected tabs; confirmImport does the
+// actual write.
+async function loadCombinedImportPreview() {
+  importStep = 'preview';
+  const body = document.getElementById('import-modal-body');
+  body.innerHTML = '<p>Loading ' + selectedTabNames.size + ' tab(s) from the Sheet…</p>';
+  document.getElementById('import-search').style.display = 'none';
+  document.getElementById('import-selectall-btn').style.display = 'none';
+  document.getElementById('import-confirm-btn').style.display = 'none';
 
   try {
     const token = await getSheetsAccessToken();
-    const rows = [];
-
-    if (classified.type === 'custom') {
-      const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
-      const [sheetRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!B3:F250`]);
-      (costItems || []).forEach(item => {
-        const rowIdx = findRowByName(sheetRows, item.item_name);
-        if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
-        const rowNum = rowIdx + 3;
-        const sheetQty = (sheetRows[rowIdx][2] || '').toString();
-        const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
-        const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
-        pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
-        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateFormulaOrNumericCell(sheetAmt, validateAmountFormula(sheetAmt, rowNum)), false, 'E' + rowNum);
-        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)), false, 'F' + rowNum);
-      });
-    } else if (classified.type === 'house') {
-      const { data: costItems } = await sb.from('cost_items').select('id,item_name');
-      const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
-      const rateByItemId = {};
-      (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
-      const [sheetRows, refRows] = await sheetsGet(token, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
-      (costItems || []).forEach(item => {
-        const hr = rateByItemId[item.id];
-        if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
-        const rowIdx = findRowByName(sheetRows, item.item_name);
-        if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null); return; }
-        const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
-        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
-      });
-
-      // Reference measurements ("Seed Reference Houses") — the raw
-      // basement_sf/floor1_sf/etc. + door/window/etc. counts this same
-      // house tab carries in its BUILDING AREA LOCATION / QUANTITIES
-      // columns (H:J), which is what the public webpage's Load Base Plan
-      // dropdown reads to prefill its form. Matched by LABEL TEXT (never
-      // a fixed row number) so it doesn't care exactly which rows these
-      // land on in the Sheet. A house with no reference_house_measurements
-      // row yet (a brand-new base plan) is treated as everything-currently-0
-      // and seeded fresh via upsert in confirmImport.
-      const { data: refRowData } = await sb.from('reference_house_measurements').select('*').eq('house', classified.house).maybeSingle();
-      const currentRef = refRowData || {};
-      Object.keys(REFERENCE_LABEL_TO_FIELD).forEach(label => {
-        const field = REFERENCE_LABEL_TO_FIELD[label];
-        let matchIdx = -1;
-        for (let i = 0; i < refRows.length; i++) {
-          const cellLabel = String((refRows[i][0] || '')).trim();
-          if (!cellLabel) continue;
-          if (field === 'tile_sf' ? cellLabel.startsWith('SF of Tile') : cellLabel === label) { matchIdx = i; break; }
-        }
-        if (matchIdx === -1) { pushMissingRow(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, currentRef[field] || 0, null); return; }
-        const rawVal = (refRows[matchIdx][1] || '').toString();
-        pushRowIfChanged(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, field, currentRef[field] || 0, rawVal, validateNumericCell(rawVal, currentRef[field] || 0), true, 'I' + (matchIdx + 1));
-      });
-    } else if (classified.type === 'site') {
-      const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
-      const [sheetRows] = await sheetsGet(token, [`'${SITE_TAB}'!A2:C150`]);
-      (siteOptions || []).forEach(opt => {
-        let rowIdx = -1;
-        for (let i = 0; i < sheetRows.length; i++) {
-          if (sheetRows[i][1] && String(sheetRows[i][1]).trim() === opt.option_label.trim() && sheetRows[i][0] && String(sheetRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
-        }
-        if (rowIdx === -1) { pushMissingRow(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, opt.cost, null); return; }
-        const sheetCostRaw = (sheetRows[rowIdx][2] || '').toString();
-        pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCostRaw, validateNumericCell(sheetCostRaw, opt.cost), true, 'C' + (rowIdx + 2));
-      });
-    } else if (classified.type === 'additional') {
-      const { data: bpRows } = await sb.from('basement_pricing').select('*').eq('id', 1);
-      const bp = bpRows && bpRows[0];
-      const [sheetRows] = await sheetsGet(token, [`'${ADDITIONAL_PRICING_TAB}'!B2:B7`]);
-      if (bp) {
-        const bpNumericFields = { fixed_cost_per_house: { idx: 0, cell: 'B2' }, shell_cost_per_sf: { idx: 1, cell: 'B3' }, finish_cost_per_sf: { idx: 2, cell: 'B4' } };
-        Object.keys(bpNumericFields).forEach(field => {
-          const { idx, cell } = bpNumericFields[field];
-          const sheetValRaw = ((sheetRows[idx] && sheetRows[idx][0]) || '').toString();
-          pushRowIfChanged(rows, field, 'basement_pricing', bp.id, field, bp[field], sheetValRaw, validateNumericCell(sheetValRaw, bp[field]), true, cell);
-        });
-        const sheetTotalFormula = ((sheetRows[5] && sheetRows[5][0]) || '').toString();
-        pushRowIfChanged(rows, 'total_cost_formula', 'basement_pricing', bp.id, 'total_cost_formula', bp.total_cost_formula || '', sheetTotalFormula, { valid: true }, false, 'B7');
-      }
+    let rows = [];
+    const skippedUnknown = [];
+    for (const tabName of selectedTabNames) {
+      const classified = classifyTab(tabName);
+      if (classified.type === 'unknown') { skippedUnknown.push(tabName); continue; }
+      const tabRows = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
+      tabRows.forEach(r => { r.tab = tabName; });
+      rows = rows.concat(tabRows);
     }
-
-    importPreview = { tab: tabName, rows };
+    importPreview = { rows, skippedUnknown };
     renderImportPreview();
   } catch (e) {
-    body.innerHTML = '<p style="color:#d93025;">Error loading "' + tabName + '": ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">‹ Back to list</button>';
+    body.innerHTML = '<p style="color:#d93025;">Error loading selected tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
   }
+}
+
+// Everything that used to be inline in loadImportPreview() for a single
+// tab — factored out so loadCombinedImportPreview() can call it once per
+// selected tab and concatenate the results.
+async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
+  const rows = [];
+
+  if (classified.type === 'custom') {
+    const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
+    const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${CUSTOM_TAB}'!B3:F250`]);
+    (costItems || []).forEach(item => {
+      const rowIdx = findRowByName(sheetRows, item.item_name);
+      if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
+      const rowNum = rowIdx + 3;
+      const sheetQty = (sheetRows[rowIdx][2] || '').toString();
+      const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
+      const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
+      pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
+      pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateFormulaOrNumericCell(sheetAmt, validateAmountFormula(sheetAmt, rowNum)), false, 'E' + rowNum);
+      pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)), false, 'F' + rowNum);
+    });
+  } else if (classified.type === 'house') {
+    const { data: costItems } = await sb.from('cost_items').select('id,item_name');
+    const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
+    const rateByItemId = {};
+    (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
+    const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
+    (costItems || []).forEach(item => {
+      const hr = rateByItemId[item.id];
+      if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
+      const rowIdx = findRowByName(sheetRows, item.item_name);
+      if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null); return; }
+      const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
+      pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
+    });
+
+    // Reference measurements ("Seed Reference Houses") — the raw
+    // basement_sf/floor1_sf/etc. + door/window/etc. counts this same
+    // house tab carries in its BUILDING AREA LOCATION / QUANTITIES
+    // columns (H:J), which is what the public webpage's Load Base Plan
+    // dropdown reads to prefill its form. Matched by LABEL TEXT (never
+    // a fixed row number) so it doesn't care exactly which rows these
+    // land on in the Sheet. A house with no reference_house_measurements
+    // row yet (a brand-new base plan) is treated as everything-currently-0
+    // and seeded fresh via upsert in confirmImport.
+    const { data: refRowData } = await sb.from('reference_house_measurements').select('*').eq('house', classified.house).maybeSingle();
+    const currentRef = refRowData || {};
+    Object.keys(REFERENCE_LABEL_TO_FIELD).forEach(label => {
+      const field = REFERENCE_LABEL_TO_FIELD[label];
+      let matchIdx = -1;
+      for (let i = 0; i < refRows.length; i++) {
+        const cellLabel = String((refRows[i][0] || '')).trim();
+        if (!cellLabel) continue;
+        if (field === 'tile_sf' ? cellLabel.startsWith('SF of Tile') : cellLabel === label) { matchIdx = i; break; }
+      }
+      if (matchIdx === -1) { pushMissingRow(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, currentRef[field] || 0, null); return; }
+      const rawVal = (refRows[matchIdx][1] || '').toString();
+      pushRowIfChanged(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, field, currentRef[field] || 0, rawVal, validateNumericCell(rawVal, currentRef[field] || 0), true, 'I' + (matchIdx + 1));
+    });
+  } else if (classified.type === 'site') {
+    const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
+    const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${SITE_TAB}'!A2:C150`]);
+    (siteOptions || []).forEach(opt => {
+      let rowIdx = -1;
+      for (let i = 0; i < sheetRows.length; i++) {
+        if (sheetRows[i][1] && String(sheetRows[i][1]).trim() === opt.option_label.trim() && sheetRows[i][0] && String(sheetRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
+      }
+      if (rowIdx === -1) { pushMissingRow(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, opt.cost, null); return; }
+      const sheetCostRaw = (sheetRows[rowIdx][2] || '').toString();
+      pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCostRaw, validateNumericCell(sheetCostRaw, opt.cost), true, 'C' + (rowIdx + 2));
+    });
+  } else if (classified.type === 'additional') {
+    const { data: bpRows } = await sb.from('basement_pricing').select('*').eq('id', 1);
+    const bp = bpRows && bpRows[0];
+    const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${ADDITIONAL_PRICING_TAB}'!B2:B7`]);
+    if (bp) {
+      const bpNumericFields = { fixed_cost_per_house: { idx: 0, cell: 'B2' }, shell_cost_per_sf: { idx: 1, cell: 'B3' }, finish_cost_per_sf: { idx: 2, cell: 'B4' } };
+      Object.keys(bpNumericFields).forEach(field => {
+        const { idx, cell } = bpNumericFields[field];
+        const sheetValRaw = ((sheetRows[idx] && sheetRows[idx][0]) || '').toString();
+        pushRowIfChanged(rows, field, 'basement_pricing', bp.id, field, bp[field], sheetValRaw, validateNumericCell(sheetValRaw, bp[field]), true, cell);
+      });
+      const sheetTotalFormula = ((sheetRows[5] && sheetRows[5][0]) || '').toString();
+      pushRowIfChanged(rows, 'total_cost_formula', 'basement_pricing', bp.id, 'total_cost_formula', bp.total_cost_formula || '', sheetTotalFormula, { valid: true }, false, 'B7');
+    }
+  }
+
+  return rows;
 }
 
 function renderImportPreview() {
   const body = document.getElementById('import-modal-body');
   const confirmBtn = document.getElementById('import-confirm-btn');
-  const { tab, rows } = importPreview;
+  const { rows, skippedUnknown } = importPreview;
   const changed = rows.filter(r => r.changed);
   const importable = changed.filter(r => r.valid);
   const issues = changed.filter(r => !r.valid);
+  const tabCount = selectedTabNames.size;
 
-  let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>';
+  let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
+
+  if (skippedUnknown && skippedUnknown.length) {
+    html += '<p style="color:#5f6368;">Not recognized, skipped: ' + skippedUnknown.join(', ') + '.</p>';
+  }
 
   // Format-drift warning — cells that used to hold a number/formula and
   // now don't (blank, or replaced with text), or a known item whose row
@@ -1204,22 +1338,23 @@ function renderImportPreview() {
   if (issues.length) {
     const patternSummary = summarizeIssuesByKind(issues);
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
-      '<strong>⚠ ' + issues.length + ' cell(s) in this tab don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
+      '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
       ' <span onclick="toggleFormatLog()" title="Show exact cells" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
       '<div style="margin-top:4px;">' + patternSummary + '</div>' +
       '<div id="import-format-log" style="display:none;margin-top:8px;font-family:monospace;font-size:11px;">' +
-      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${tab}'!${r.cellRef}` : '(row not found)'} — ${r.label}: ${r.reason}` +
+      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${r.tab}'!${r.cellRef}` : `'${r.tab}' (row not found)`} — ${r.label}: ${r.reason}` +
         `${r.cellRef ? ` — sheet actually has: ${r.next === '' ? '(blank)' : '"' + r.next + '"'}` : ''}</div>`).join('') +
       '</div></div>';
   }
 
-  html += `<p><strong>${tab}</strong> — ${importable.length} change(s) ready to import` + (issues.length ? `, ${issues.length} skipped (see above)` : '') + `:</p>`;
+  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (issues.length ? `, ${issues.length} skipped (see above)` : '') + `:</p>`;
   if (!changed.length) {
-    html += '<p>Nothing has changed — Supabase already matches this tab.</p>';
+    html += '<p>Nothing has changed — Supabase already matches the selected tab(s).</p>';
   } else if (importable.length) {
     html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
-      '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
+      '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Tab</th><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
       importable.map(r => `<tr style="border-bottom:1px solid #f1f3f4;">` +
+        `<td style="padding:4px;color:#5f6368;">${r.tab}</td>` +
         `<td style="padding:4px;">${r.label}</td>` +
         `<td style="padding:4px;">${r.current}</td><td style="padding:4px;">${r.next}</td></tr>`).join('') +
       '</table>';
