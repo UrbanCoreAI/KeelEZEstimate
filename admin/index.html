@@ -1160,6 +1160,10 @@ let selectedSpreadsheetId = null;
 let selectedSpreadsheetName = null;
 let selectedTabNames = new Set();
 let importStep = 'files'; // 'files' -> 'tabs' -> 'preview'
+// Default is to write these cells anyway (Sheet wins) rather than
+// silently drop them — set true via the toggle in the preview to fall
+// back to the safer skip-them behavior instead.
+let skipFormatIssues = false;
 
 async function openImportModal() {
   importPreview = null;
@@ -1169,6 +1173,7 @@ async function openImportModal() {
   selectedSpreadsheetName = null;
   selectedTabNames = new Set();
   importStep = 'files';
+  skipFormatIssues = false;
   const search = document.getElementById('import-search');
   search.value = '';
   search.style.display = '';
@@ -1436,14 +1441,21 @@ function renderImportPreview() {
   const confirmBtn = document.getElementById('import-confirm-btn');
   const { rows, skippedUnknown, detectedNewBasePlans } = importPreview;
   const changed = rows.filter(r => r.changed);
-  const importable = changed.filter(r => r.valid);
   // "Not found" items on a renamable table (cost_items/house_rates/
   // site_options — reference_house_measurements' fixed label set isn't
   // free-text, so it doesn't get the rename UI) get their own actionable
   // section instead of sitting in the generic issue log — there's
-  // actually something to DO about these right here.
+  // actually something to DO about these right here. Never
+  // auto-imported regardless of the override toggle below — there's no
+  // sheet value to write for a row that was never found in the first
+  // place, "override" has nothing to act on.
   const renamable = changed.filter(r => !r.valid && r.field === null && r.table !== 'reference_house_measurements');
   const issues = changed.filter(r => !r.valid && !renamable.includes(r));
+  // Format-drift cells (blank/non-numeric where a number was expected, a
+  // formula that doesn't match) default to being written anyway — the
+  // Sheet is treated as the source of truth even when it looks off —
+  // with a toggle to fall back to the safer skip-them behavior instead.
+  const importable = changed.filter(r => r.valid).concat(skipFormatIssues ? [] : issues);
   const tabCount = selectedTabNames.size;
 
   let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
@@ -1476,19 +1488,24 @@ function renderImportPreview() {
   }
 
   // Format-drift warning — cells that used to hold a number/formula and
-  // now don't (blank, or replaced with text). These are never imported;
-  // the "?" opens a plain-language summary (grouped by cause, item names
-  // listed) instead of a raw cell-by-cell dump.
+  // now don't (blank, or replaced with text). Written anyway by default
+  // (skipFormatIssues starts false each time the modal opens); the
+  // toggle switches to excluding them instead. The "?" opens a
+  // plain-language summary (grouped by cause, item names listed) instead
+  // of a raw cell-by-cell dump, either way.
   if (issues.length) {
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
-      '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
+      '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right' + (skipFormatIssues ? ' and were skipped' : ' — will be written anyway') + '</strong> — formatting differs from what Write to Estimate/the database expects.' +
       ' <span onclick="toggleFormatLog()" title="Show summary" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;">' +
+      `<input type="checkbox" ${skipFormatIssues ? 'checked' : ''} onchange="setSkipFormatIssues(this.checked)"> Skip these instead of writing them` +
+      '</label>' +
       '<div id="import-format-log" style="display:none;margin-top:8px;font-size:12px;">' +
       renderFormatIssueSummary(issues) +
       '</div></div>';
   }
 
-  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (issues.length ? `, ${issues.length} skipped (see above)` : '') + `:</p>`;
+  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (issues.length ? (skipFormatIssues ? `, ${issues.length} skipped (see above)` : `, including ${issues.length} overridden (see above)`) : '') + `:</p>`;
   if (!changed.length) {
     html += '<p>Nothing has changed — Supabase already matches the selected tab(s).</p>';
   } else if (importable.length) {
@@ -1534,6 +1551,11 @@ function toggleFormatLog() {
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
+function setSkipFormatIssues(checked) {
+  skipFormatIssues = checked;
+  renderImportPreview();
+}
+
 // What the "?" reveals — a plain-language, grouped summary instead of a
 // raw cell-by-cell dump. Groups by (field type, cause) — every row that
 // shares the same field AND the same diagnosed reason (or is uniformly
@@ -1575,7 +1597,10 @@ async function confirmImport() {
   const confirmBtn = document.getElementById('import-confirm-btn');
   confirmBtn.disabled = true;
   confirmBtn.textContent = 'Importing…';
-  const importable = importPreview.rows.filter(r => r.changed && r.valid);
+  // Format-drift cells are written anyway by default (Sheet wins), same
+  // as the preview — r.field !== null excludes "not found" rows, which
+  // have nothing to write regardless of this toggle.
+  const importable = importPreview.rows.filter(r => r.changed && (r.valid || (!skipFormatIssues && r.field !== null)));
   const results = [];
 
   // "Replace row" confirmations for not-found items — read straight from
