@@ -903,6 +903,23 @@ function validateUnitCostFormula(formula, row) {
   return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 
+// Numeric cells (amounts, costs, basement constants) don't have a fixed
+// formula pattern to check against — instead this catches the two ways
+// a cell can drift into something Write to Estimate/the database can no
+// longer read: gone blank where Supabase currently has a real value, or
+// replaced with non-numeric text (someone typed a note instead of a
+// price). A blank cell where Supabase's own value is already 0 is not
+// flagged — there's nothing to lose there.
+function validateNumericCell(raw, current) {
+  const trimmed = (raw === undefined || raw === null) ? '' : String(raw).trim();
+  if (trimmed === '') {
+    const hadValue = (Number(current) || 0) !== 0;
+    return hadValue ? { valid: false, reason: 'cell is now blank — Supabase currently has ' + current } : { valid: true };
+  }
+  if (!isFinite(Number(trimmed))) return { valid: false, reason: 'sheet has "' + trimmed + '" instead of a number' };
+  return { valid: true };
+}
+
 let sheetsTokenRequestInFlight = null;
 function getSheetsAccessToken() {
   if (sheetsAccessToken) return Promise.resolve(sheetsAccessToken);
@@ -937,6 +954,20 @@ async function sheetsGet(token, ranges) {
   return body.valueRanges.map(vr => vr.values || []);
 }
 
+// The REAL list of tabs currently in the spreadsheet (not a synthetic
+// list built from what we already know about) — so a renamed tab, an
+// extra tab someone added, or a typo shows up in the picker exactly as
+// it exists in Drive right now.
+async function fetchSheetTabNames() {
+  const token = await getSheetsAccessToken();
+  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '?fields=sheets.properties.title', {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error('Could not list sheet tabs: ' + JSON.stringify(body));
+  return (body.sheets || []).map(s => s.properties.title);
+}
+
 function findRowByName(rows, name) {
   for (let i = 0; i < rows.length; i++) {
     if (rows[i][0] && String(rows[i][0]).trim() === name.trim()) return i;
@@ -944,37 +975,60 @@ function findRowByName(rows, name) {
   return -1;
 }
 
-// Adds one preview row if the Sheet's current value differs from what's
-// in Supabase right now. `numeric` compares as Number (amounts/costs);
-// otherwise compares as trimmed strings (formulas, which are text).
-function pushRowIfChanged(rows, label, table, id, field, current, next, validation, numeric) {
-  const changed = numeric
-    ? (Number(current) || 0) !== (Number(next) || 0)
-    : String(current || '').trim() !== String(next || '').trim();
-  rows.push({ label, table, id, field, current, next, valid: validation.valid, reason: validation.reason, changed });
-}
-
-// The known, importable sheet tabs — Custom Plan, every base plan house
-// (dynamic, from ALL_HOUSES), Site Options, Additional Pricing. Anything
-// else in the actual spreadsheet (Sales Notes, Template, etc.) isn't a
-// recognized cost source and isn't offered here.
-function importableTabs() {
+// A tab is only importable if its name matches something the system
+// already tracks — this never changes what gets read, only which of the
+// real tabs (from fetchSheetTabNames) we know how to interpret.
+function classifyTab(tabName) {
+  if (tabName === CUSTOM_TAB) return { type: 'custom' };
   const houseTabs = getHouseTabs();
-  const tabs = [{ name: CUSTOM_TAB }];
-  ALL_HOUSES.forEach(h => tabs.push({ name: houseTabs[h.key], house: h.key }));
-  tabs.push({ name: SITE_TAB });
-  tabs.push({ name: ADDITIONAL_PRICING_TAB });
-  return tabs;
+  const house = Object.keys(houseTabs).find(k => houseTabs[k] === tabName);
+  if (house) return { type: 'house', house };
+  if (tabName === SITE_TAB) return { type: 'site' };
+  if (tabName === ADDITIONAL_PRICING_TAB) return { type: 'additional' };
+  return { type: 'unknown' };
 }
 
-function openImportModal() {
+// Adds one preview row. `sheetRaw` is always the exact, un-coerced Sheet
+// cell text — validation (a formula validator, or validateNumericCell)
+// decides whether it's safe to import; a row that fails validation is
+// always treated as "changed" so it surfaces in the format-issue log
+// even in edge cases where the naive before/after comparison wouldn't
+// otherwise flag it. `numeric` controls both the changed-comparison
+// (Number vs trimmed-string) and how confirmImport writes the value.
+function pushRowIfChanged(rows, label, table, id, field, current, sheetRaw, validation, numeric, cellRef) {
+  const changed = !validation.valid
+    ? true
+    : (numeric
+        ? (Number(current) || 0) !== (Number(sheetRaw) || 0)
+        : String(current || '').trim() !== String(sheetRaw || '').trim());
+  rows.push({ label, table, id, field, current, next: sheetRaw, valid: validation.valid, reason: validation.reason, changed, numeric: !!numeric, cellRef });
+}
+
+// A known item whose name text wasn't found anywhere in the tab at all —
+// distinct from a cell that's merely blank: the whole row is gone
+// (renamed, deleted, or moved), so nothing here can even guess a value.
+function pushMissingRow(rows, label, table, id, current, cellRef) {
+  rows.push({ label, table, id, field: null, current, next: '(not found)', valid: false, reason: 'item name not found anywhere in this tab', changed: true, numeric: false, cellRef });
+}
+
+let realSheetTabsCache = null;
+
+async function openImportModal() {
   importPreview = null;
+  realSheetTabsCache = null;
   const search = document.getElementById('import-search');
   search.value = '';
   search.style.display = '';
   document.getElementById('import-confirm-btn').style.display = 'none';
-  renderImportTabList();
   document.getElementById('import-modal').classList.add('active');
+  const body = document.getElementById('import-modal-body');
+  body.innerHTML = '<p>Loading sheet tabs from Google Drive…</p>';
+  try {
+    realSheetTabsCache = await fetchSheetTabNames();
+    renderImportTabList();
+  } catch (e) {
+    body.innerHTML = '<p style="color:#d93025;">Could not load sheet tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">Retry</button>';
+  }
 }
 
 function closeImportModal() {
@@ -985,10 +1039,10 @@ function closeImportModal() {
 function renderImportTabList() {
   const q = (document.getElementById('import-search').value || '').toLowerCase();
   const body = document.getElementById('import-modal-body');
-  const matches = importableTabs().filter(t => t.name.toLowerCase().includes(q));
+  const matches = (realSheetTabsCache || []).filter(name => name.toLowerCase().includes(q));
   if (!matches.length) { body.innerHTML = '<p>No matching sheet tabs.</p>'; return; }
   body.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' +
-    matches.map(t => `<li style="padding:8px;border-bottom:1px solid #eee;cursor:pointer;" onclick="loadImportPreview('${t.name.replace(/'/g, "\\'")}')">${t.name}</li>`).join('') +
+    matches.map(name => `<li style="padding:8px;border-bottom:1px solid #eee;cursor:pointer;" onclick="loadImportPreview('${name.replace(/'/g, "\\'")}')">${name}</li>`).join('') +
     '</ul>';
 }
 
@@ -1002,29 +1056,35 @@ async function loadImportPreview(tabName) {
   body.innerHTML = '<p>Loading "' + tabName + '" from the Sheet…</p>';
   document.getElementById('import-search').style.display = 'none';
   document.getElementById('import-confirm-btn').style.display = 'none';
+
+  const classified = classifyTab(tabName);
+  if (classified.type === 'unknown') {
+    body.innerHTML = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>' +
+      '<p>"' + tabName + '" isn\'t a tab Write to Estimate or the database reads from — there\'s nothing recognized here to import.</p>';
+    return;
+  }
+
   try {
     const token = await getSheetsAccessToken();
-    const houseTabs = getHouseTabs();
     const rows = [];
 
-    if (tabName === CUSTOM_TAB) {
+    if (classified.type === 'custom') {
       const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
       const [sheetRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!B3:F100`]);
       (costItems || []).forEach(item => {
         const rowIdx = findRowByName(sheetRows, item.item_name);
-        if (rowIdx === -1) return;
+        if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
         const rowNum = rowIdx + 3;
         const sheetQty = (sheetRows[rowIdx][2] || '').toString();
         const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
         const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
-        pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty));
-        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateAmountFormula(sheetAmt, rowNum));
-        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateUnitCostFormula(sheetUnit, rowNum));
+        pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
+        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateAmountFormula(sheetAmt, rowNum), false, 'E' + rowNum);
+        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateUnitCostFormula(sheetUnit, rowNum), false, 'F' + rowNum);
       });
-    } else if (Object.values(houseTabs).includes(tabName)) {
-      const house = Object.keys(houseTabs).find(k => houseTabs[k] === tabName);
+    } else if (classified.type === 'house') {
       const { data: costItems } = await sb.from('cost_items').select('id,item_name');
-      const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', house);
+      const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
       const rateByItemId = {};
       (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
       const [sheetRows] = await sheetsGet(token, [`'${tabName}'!B3:E100`]);
@@ -1032,11 +1092,11 @@ async function loadImportPreview(tabName) {
         const hr = rateByItemId[item.id];
         if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
         const rowIdx = findRowByName(sheetRows, item.item_name);
-        if (rowIdx === -1) return;
-        const sheetAmt = Number(sheetRows[rowIdx][3]) || 0;
-        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmt, { valid: true }, true);
+        if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null); return; }
+        const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
+        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
       });
-    } else if (tabName === SITE_TAB) {
+    } else if (classified.type === 'site') {
       const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
       const [sheetRows] = await sheetsGet(token, [`'${SITE_TAB}'!A2:C60`]);
       (siteOptions || []).forEach(opt => {
@@ -1044,23 +1104,23 @@ async function loadImportPreview(tabName) {
         for (let i = 0; i < sheetRows.length; i++) {
           if (sheetRows[i][1] && String(sheetRows[i][1]).trim() === opt.option_label.trim() && sheetRows[i][0] && String(sheetRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
         }
-        if (rowIdx === -1) return;
-        const sheetCost = Number(sheetRows[rowIdx][2]) || 0;
-        pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCost, { valid: true }, true);
+        if (rowIdx === -1) { pushMissingRow(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, opt.cost, null); return; }
+        const sheetCostRaw = (sheetRows[rowIdx][2] || '').toString();
+        pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCostRaw, validateNumericCell(sheetCostRaw, opt.cost), true, 'C' + (rowIdx + 2));
       });
-    } else if (tabName === ADDITIONAL_PRICING_TAB) {
+    } else if (classified.type === 'additional') {
       const { data: bpRows } = await sb.from('basement_pricing').select('*').eq('id', 1);
       const bp = bpRows && bpRows[0];
       const [sheetRows] = await sheetsGet(token, [`'${ADDITIONAL_PRICING_TAB}'!B2:B7`]);
       if (bp) {
-        const bpNumericFields = { fixed_cost_per_house: 0, shell_cost_per_sf: 1, finish_cost_per_sf: 2 };
+        const bpNumericFields = { fixed_cost_per_house: { idx: 0, cell: 'B2' }, shell_cost_per_sf: { idx: 1, cell: 'B3' }, finish_cost_per_sf: { idx: 2, cell: 'B4' } };
         Object.keys(bpNumericFields).forEach(field => {
-          const idx = bpNumericFields[field];
-          const sheetVal = Number((sheetRows[idx] && sheetRows[idx][0]) || 0);
-          pushRowIfChanged(rows, field, 'basement_pricing', bp.id, field, bp[field], sheetVal, { valid: true }, true);
+          const { idx, cell } = bpNumericFields[field];
+          const sheetValRaw = ((sheetRows[idx] && sheetRows[idx][0]) || '').toString();
+          pushRowIfChanged(rows, field, 'basement_pricing', bp.id, field, bp[field], sheetValRaw, validateNumericCell(sheetValRaw, bp[field]), true, cell);
         });
         const sheetTotalFormula = ((sheetRows[5] && sheetRows[5][0]) || '').toString();
-        pushRowIfChanged(rows, 'total_cost_formula', 'basement_pricing', bp.id, 'total_cost_formula', bp.total_cost_formula || '', sheetTotalFormula, { valid: true });
+        pushRowIfChanged(rows, 'total_cost_formula', 'basement_pricing', bp.id, 'total_cost_formula', bp.total_cost_formula || '', sheetTotalFormula, { valid: true }, false, 'B7');
       }
     }
 
@@ -1077,22 +1137,41 @@ function renderImportPreview() {
   const { tab, rows } = importPreview;
   const changed = rows.filter(r => r.changed);
   const importable = changed.filter(r => r.valid);
-  const skipped = changed.filter(r => !r.valid);
+  const issues = changed.filter(r => !r.valid);
 
   let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>';
-  html += `<p><strong>${tab}</strong> — ${importable.length} change(s) found` + (skipped.length ? `, ${skipped.length} skipped (unrecognized format)` : '') + `:</p>`;
+
+  // Format-drift warning — cells that used to hold a number/formula and
+  // now don't (blank, or replaced with text). These are never imported;
+  // the "?" opens a log of the exact cell + what's wrong with it, per
+  // row, so it's obvious what to go fix in the Sheet.
+  if (issues.length) {
+    html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
+      '<strong>⚠ ' + issues.length + ' cell(s) in this tab don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
+      ' <span onclick="toggleFormatLog()" title="Show exact cells" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
+      '<div id="import-format-log" style="display:none;margin-top:8px;font-family:monospace;font-size:11px;">' +
+      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${tab}'!${r.cellRef}` : '(row not found)'} — ${r.label}: ${r.reason}</div>`).join('') +
+      '</div></div>';
+  }
+
+  html += `<p><strong>${tab}</strong> — ${importable.length} change(s) ready to import` + (issues.length ? `, ${issues.length} skipped (see above)` : '') + `:</p>`;
   if (!changed.length) {
     html += '<p>Nothing has changed — Supabase already matches this tab.</p>';
-  } else {
+  } else if (importable.length) {
     html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
       '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
-      changed.map(r => `<tr style="border-bottom:1px solid #f1f3f4;${r.valid ? '' : 'color:#d93025;'}">` +
-        `<td style="padding:4px;">${r.label}${r.valid ? '' : ' ⚠ ' + r.reason}</td>` +
+      importable.map(r => `<tr style="border-bottom:1px solid #f1f3f4;">` +
+        `<td style="padding:4px;">${r.label}</td>` +
         `<td style="padding:4px;">${r.current}</td><td style="padding:4px;">${r.next}</td></tr>`).join('') +
       '</table>';
   }
   body.innerHTML = html;
   confirmBtn.style.display = importable.length ? 'inline-block' : 'none';
+}
+
+function toggleFormatLog() {
+  const el = document.getElementById('import-format-log');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 async function confirmImport() {
@@ -1103,7 +1182,8 @@ async function confirmImport() {
   const importable = importPreview.rows.filter(r => r.changed && r.valid);
   const results = [];
   for (const r of importable) {
-    const { error } = await sb.from(r.table).update({ [r.field]: r.next }).eq('id', r.id);
+    const value = r.numeric ? (Number(r.next) || 0) : r.next;
+    const { error } = await sb.from(r.table).update({ [r.field]: value }).eq('id', r.id);
     results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported: ' + r.label));
   }
   document.getElementById('import-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(x => `<li>${x}</li>`).join('') + '</ul>' +
