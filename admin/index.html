@@ -934,6 +934,23 @@ function validateNumericCell(raw, current) {
   return { valid: true };
 }
 
+// Amount/Unit Cost cells on the Custom Plan tab are meant to hold a live
+// formula (validateAmountFormula/validateUnitCostFormula) — but this is a
+// real, actively-edited business spreadsheet, and a specific item's price
+// legitimately gets overridden with a plain typed-in number sometimes.
+// That's not a format problem (Write to Estimate never reads the Sheet's
+// formula text either way — only Supabase's own stored value), so a
+// formula check that fails only because the cell now holds a valid plain
+// number instead should still import normally. Only genuinely bad content
+// (blank where something existed, or actual non-numeric text) stays
+// flagged.
+function validateFormulaOrNumericCell(raw, formulaCheck) {
+  if (formulaCheck.valid) return formulaCheck;
+  const trimmed = (raw === undefined || raw === null) ? '' : String(raw).trim();
+  if (trimmed !== '' && isFinite(Number(trimmed))) return { valid: true };
+  return formulaCheck;
+}
+
 let sheetsTokenRequestInFlight = null;
 function getSheetsAccessToken() {
   if (sheetsAccessToken) return Promise.resolve(sheetsAccessToken);
@@ -1084,7 +1101,7 @@ async function loadImportPreview(tabName) {
 
     if (classified.type === 'custom') {
       const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
-      const [sheetRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!B3:F100`]);
+      const [sheetRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!B3:F250`]);
       (costItems || []).forEach(item => {
         const rowIdx = findRowByName(sheetRows, item.item_name);
         if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
@@ -1093,15 +1110,15 @@ async function loadImportPreview(tabName) {
         const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
         const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
         pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
-        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateAmountFormula(sheetAmt, rowNum), false, 'E' + rowNum);
-        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateUnitCostFormula(sheetUnit, rowNum), false, 'F' + rowNum);
+        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateFormulaOrNumericCell(sheetAmt, validateAmountFormula(sheetAmt, rowNum)), false, 'E' + rowNum);
+        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)), false, 'F' + rowNum);
       });
     } else if (classified.type === 'house') {
       const { data: costItems } = await sb.from('cost_items').select('id,item_name');
       const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
       const rateByItemId = {};
       (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
-      const [sheetRows, refRows] = await sheetsGet(token, [`'${tabName}'!B3:E100`, `'${tabName}'!H1:J40`]);
+      const [sheetRows, refRows] = await sheetsGet(token, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
       (costItems || []).forEach(item => {
         const hr = rateByItemId[item.id];
         if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
@@ -1136,7 +1153,7 @@ async function loadImportPreview(tabName) {
       });
     } else if (classified.type === 'site') {
       const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
-      const [sheetRows] = await sheetsGet(token, [`'${SITE_TAB}'!A2:C60`]);
+      const [sheetRows] = await sheetsGet(token, [`'${SITE_TAB}'!A2:C150`]);
       (siteOptions || []).forEach(opt => {
         let rowIdx = -1;
         for (let i = 0; i < sheetRows.length; i++) {
@@ -1180,15 +1197,19 @@ function renderImportPreview() {
   let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>';
 
   // Format-drift warning — cells that used to hold a number/formula and
-  // now don't (blank, or replaced with text). These are never imported;
-  // the "?" opens a log of the exact cell + what's wrong with it, per
-  // row, so it's obvious what to go fix in the Sheet.
+  // now don't (blank, or replaced with text), or a known item whose row
+  // is missing entirely. These are never imported; the "?" opens a log
+  // of the exact cell, what's expected, and what's actually there, so
+  // it's obvious what to go fix in the Sheet without having to guess.
   if (issues.length) {
+    const patternSummary = summarizeIssuesByKind(issues);
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
       '<strong>⚠ ' + issues.length + ' cell(s) in this tab don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
       ' <span onclick="toggleFormatLog()" title="Show exact cells" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
+      '<div style="margin-top:4px;">' + patternSummary + '</div>' +
       '<div id="import-format-log" style="display:none;margin-top:8px;font-family:monospace;font-size:11px;">' +
-      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${tab}'!${r.cellRef}` : '(row not found)'} — ${r.label}: ${r.reason}</div>`).join('') +
+      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${tab}'!${r.cellRef}` : '(row not found)'} — ${r.label}: ${r.reason}` +
+        `${r.cellRef ? ` — sheet actually has: ${r.next === '' ? '(blank)' : '"' + r.next + '"'}` : ''}</div>`).join('') +
       '</div></div>';
   }
 
@@ -1210,6 +1231,26 @@ function renderImportPreview() {
 function toggleFormatLog() {
   const el = document.getElementById('import-format-log');
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// One-line pattern summary shown above the full cell-by-cell log — "73
+// Amount Formula cells, 2 items not found" reads in a glance instead of
+// having to open the log and count for yourself.
+function summarizeIssuesByKind(issues) {
+  const counts = {};
+  const FIELD_LABELS = {
+    quantity_formula: 'Quantity Formula cell(s)',
+    amount_formula: 'Amount Formula cell(s)',
+    unit_cost_formula: 'Unit Cost Formula cell(s)',
+    total_cost_formula: 'Total Cost Formula cell',
+    amount: 'Amount cell(s)',
+    cost: 'Cost cell(s)'
+  };
+  issues.forEach(r => {
+    const kind = r.field === null ? 'item(s) not found in this tab' : (FIELD_LABELS[r.field] || (r.field || 'field').replace(/_/g, ' ') + ' cell(s)');
+    counts[kind] = (counts[kind] || 0) + 1;
+  });
+  return Object.keys(counts).map(k => '<strong>' + counts[k] + '</strong> ' + k).join(', ') + '.';
 }
 
 async function confirmImport() {
