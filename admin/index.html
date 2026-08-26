@@ -94,8 +94,7 @@
     </div>
     <div>
       <span id="user-email-label" style="margin-right:12px;color:#5f6368;"></span>
-      <span id="sync-status" style="margin-right:12px;font-size:11px;color:#5f6368;"></span>
-      <button id="sync-btn" onclick="syncChangesToSheets()" style="padding:4px 8px;cursor:pointer;background:#1a73e8;color:#fff;border:none;border-radius:4px;margin-right:8px;">Sync Changes to Sheets</button>
+      <button id="import-btn" onclick="openImportModal()" style="padding:4px 8px;cursor:pointer;background:#1a73e8;color:#fff;border:none;border-radius:4px;margin-right:8px;">Import from Sheet</button>
       <button onclick="signOut()" style="padding:4px 8px;cursor:pointer;">Sign Out</button>
     </div>
   </header>
@@ -141,14 +140,21 @@
   </div>
 </div>
 
-<!-- Sync Results Modal -->
-<div id="sync-modal" class="modal-overlay">
-  <div class="modal" style="width:560px;max-height:70vh;overflow-y:auto;">
-    <h3 id="sync-modal-title">Sync Changes to Sheets</h3>
-    <div id="sync-modal-body" style="font-size:12px;line-height:1.6;"></div>
+<!-- Import from Sheet Modal — search a known tab, preview what changed,
+     confirm to write it into Supabase. Sheet -> Supabase only; never
+     writes Supabase's own values back up into the Sheet, and never
+     imports a row that doesn't already match a known item name. -->
+<div id="import-modal" class="modal-overlay">
+  <div class="modal" style="width:640px;max-height:75vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3 id="import-modal-title" style="margin:0;">Import from Sheet</h3>
+      <button id="import-confirm-btn" class="modal-btn btn-confirm" onclick="confirmImport()" style="display:none;">Confirm Import</button>
+    </div>
+    <input id="import-search" type="text" placeholder="Search sheet tabs…" oninput="renderImportTabList()"
+           style="width:100%;padding:8px;font-size:13px;border:1px solid #dadce0;border-radius:4px;margin-bottom:10px;box-sizing:border-box;">
+    <div id="import-modal-body" style="font-size:12px;line-height:1.6;"></div>
     <div class="modal-actions">
-      <button class="modal-btn btn-cancel" onclick="closeSyncModal()">Close</button>
-      <button id="sync-apply-btn" class="modal-btn btn-confirm" onclick="applySyncChanges()" style="display:none;">Apply These Changes</button>
+      <button class="modal-btn btn-cancel" onclick="closeImportModal()">Close</button>
     </div>
   </div>
 </div>
@@ -813,39 +819,50 @@ async function loadSheetData() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Sync Changes to Sheets — mirrors supabase-migration/sync.js,
-// but runs entirely in-browser: Supabase writes go through the
-// same `sb` client already used above (RLS enforces who can write),
-// Sheets writes use a Google OAuth token from this same page
-// (reuses the exact Client ID + scope already approved for the
-// public KeelQuickQuote webpage — no new Google Cloud Console
-// setup needed since this page is hosted on the same origin).
+// Import from Sheet — Sheet -> Supabase only. Runs entirely
+// in-browser: Sheets reads use a Google OAuth token from this same
+// page (reuses the exact Client ID + scope already approved for the
+// public KeelQuickQuote webpage), Supabase writes go through the
+// same `sb` client already used above (RLS enforces who can write).
 //
-// Safety gates carried over unchanged from sync.js:
-//   1. A formula is never written to the Sheet unless it matches
-//      one of the 4 confirmed-safe patterns (validateQuantityFormula).
-//   2. Every Sheet write is read back to confirm it landed correctly.
-//   3. Rows are matched by NAME text, never by position alone.
-//   4. Conflict rule: a local cache (browser localStorage, not the
-//      Node script's sync-state.json — these are two independent
-//      caches, each valid only against writes made through that
-//      same location) remembers each field's last-synced value.
-//      If only one side changed since then, sync auto-applies it.
-//      If BOTH changed to different values, it's flagged as a
-//      CONFLICT and never auto-resolved.
+// This replaced the old two-way "Sync Changes to Sheets" tool, which
+// could also push Supabase's own values back up into the Sheet —
+// that direction is gone. Nothing here ever writes to the Sheet.
+//
+// Safety gates carried over unchanged:
+//   1. A formula is never written into Supabase unless it matches
+//      one of the confirmed-safe patterns (validateQuantityFormula/
+//      validateAmountFormula/validateUnitCostFormula) — anything
+//      else is shown but skipped, never silently imported.
+//   2. Rows are matched by NAME text (findRowByName), never by
+//      position alone.
+//   3. A Sheet row only gets imported if its name already matches an
+//      existing cost_items/site_options/basement_pricing row — a
+//      brand-new row added by hand in the Sheet is never auto-
+//      created here, so Write to Estimate's cell mapping (which
+//      houses/cost_items/quantity_formula ties to) never changes
+//      shape from this tool. Every change is previewed and requires
+//      an explicit Confirm before anything is written.
 // ═══════════════════════════════════════════════════════════
 
 const GOOGLE_CLIENT_ID = '453224496219-qbeam8al28h07q5fcppavmg95p66sjup.apps.googleusercontent.com';
 const SHEET_ID = '1iO37IiTagtu4OGEZSHA5C62tPRc5HOKMpq0UcsUI9ig';
 const CUSTOM_TAB = '2026 CUSTOM PLAN';
-const HOUSE_TABS = { kiawah: '2026 MASTER PLAN KIAWAH', sanibel: '2026 MASTER PLAN SANIBEL', vero: '2026 MASTER PLAN VERO' };
 const SITE_TAB = 'SITE OPTIONS';
 const ADDITIONAL_PRICING_TAB = 'ADDITIONAL PRICING';
-const ADDITIONAL_PRICING_CELLS = { fixed_cost_per_house: 'B2', shell_cost_per_sf: 'B3', finish_cost_per_sf: 'B4', total_cost_formula: 'B7' };
-const SYNC_STATE_KEY = 'keelSyncState';
 
 let sheetsAccessToken = null;
-let pendingSyncPlan = null;
+let importPreview = null; // { tab, rows: [{label, table, id, field, current, next, valid, reason, changed}] }
+
+// Base plan (house) tabs come from the same "houses" table ALL_HOUSES
+// already loads for the sheet-tabs footer — a house key -> its Sheet
+// tab name, built fresh every call so a base plan added mid-session
+// (via "+ Add Base Plan") is importable without a page reload.
+function getHouseTabs() {
+  const map = {};
+  ALL_HOUSES.forEach(h => { map[h.key] = `2026 MASTER PLAN ${h.label.toUpperCase()}`; });
+  return map;
+}
 
 // --- Formula validator — same 4 confirmed-safe patterns as calc-engine.js ---
 const CELL_REF_RE = /\$?I\$?(\d+)/g;
@@ -859,7 +876,7 @@ function validateQuantityFormula(formula) {
   if (!refs) return { valid: false, reason: 'no recognized $I$N / IN references found' };
   const rebuilt = refs.join('+');
   const stripped = body.replace(/\s+/g, '');
-  if (stripped !== rebuilt) return { valid: false, reason: 'contains something other than a "+"-joined chain of references — refusing to sync' };
+  if (stripped !== rebuilt) return { valid: false, reason: 'contains something other than a "+"-joined chain of references — refusing to import' };
   for (const ref of refs) {
     const rowNum = parseInt(ref.match(/(\d+)/)[0], 10);
     if (rowNum === 13) continue;
@@ -871,13 +888,18 @@ function validateQuantityFormula(formula) {
 // amount_formula/unit_cost_formula follow one fixed, uniform pattern for
 // every tracked cost item (confirmed via full Sheet audit) — no per-row
 // variation, so validation is a strict exact-match gate, same idea as
-// calc-engine.js's copies of these two functions.
+// calc-engine.js's copies of these two functions. The unit-cost AVERAGE
+// is built from the CURRENT house list (getHouseTabs, sort_order) so it
+// stays correct as base plans are added — it's no longer a fixed
+// Kiawah/Sanibel/Vero literal.
 function validateAmountFormula(formula, row) {
   const expected = '=D' + row + '*F' + row;
   return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 function validateUnitCostFormula(formula, row) {
-  const expected = "=AVERAGE('2026 MASTER PLAN KIAWAH'!F" + row + ",'2026 MASTER PLAN SANIBEL'!F" + row + ",'2026 MASTER PLAN VERO'!F" + row + ')';
+  const houseTabs = getHouseTabs();
+  const refs = ALL_HOUSES.map(h => `'${houseTabs[h.key]}'!F${row}`).join(',');
+  const expected = '=AVERAGE(' + refs + ')';
   return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 
@@ -915,36 +937,6 @@ async function sheetsGet(token, ranges) {
   return body.valueRanges.map(vr => vr.values || []);
 }
 
-async function sheetsWriteOne(token, range, value) {
-  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values:batchUpdate', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: [{ range, values: [[value]] }] })
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error('Sheets write failed: ' + JSON.stringify(body));
-}
-
-function loadSyncState() {
-  const fallback = { costFormulas: {}, houseRates: {}, siteOptions: {}, basementPricing: {} };
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SYNC_STATE_KEY)) || fallback;
-    if (!parsed.basementPricing) parsed.basementPricing = {};
-    return parsed;
-  } catch (e) { return fallback; }
-}
-function saveSyncState(state) { localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(state)); }
-
-function decideSyncAction(lastSynced, supabaseVal, sheetVal) {
-  if (String(supabaseVal) === String(sheetVal)) return 'unchanged';
-  if (lastSynced === undefined) return 'push';
-  const supaChanged = String(lastSynced) !== String(supabaseVal);
-  const sheetChanged = String(lastSynced) !== String(sheetVal);
-  if (supaChanged && !sheetChanged) return 'push';
-  if (sheetChanged && !supaChanged) return 'pull';
-  return 'conflict';
-}
-
 function findRowByName(rows, name) {
   for (let i = 0; i < rows.length; i++) {
     if (rows[i][0] && String(rows[i][0]).trim() === name.trim()) return i;
@@ -952,221 +944,175 @@ function findRowByName(rows, name) {
   return -1;
 }
 
-async function computeSyncPlan() {
-  const token = await getSheetsAccessToken();
-  const state = loadSyncState();
-  const pushes = [], pulls = [], conflicts = [];
-
-  const [{ data: costItems }, { data: houseRates }, { data: siteOptions }, { data: basementPricingRows }] = await Promise.all([
-    sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula'),
-    sb.from('house_rates').select('cost_item_id,house,amount'),
-    sb.from('site_options').select('id,category,option_label,cost'),
-    sb.from('basement_pricing').select('*').eq('id', 1)
-  ]);
-  const basementPricing = basementPricingRows && basementPricingRows[0];
-
-  const ranges = [
-    `'${CUSTOM_TAB}'!B3:F100`,
-    `'${HOUSE_TABS.kiawah}'!B3:E100`,
-    `'${HOUSE_TABS.sanibel}'!B3:E100`,
-    `'${HOUSE_TABS.vero}'!B3:E100`,
-    `'${SITE_TAB}'!A2:C60`,
-    `'${ADDITIONAL_PRICING_TAB}'!B2:B7`
-  ];
-  const [customRows, kiawahRows, sanibelRows, veroRows, siteRows, additionalPricingRows] = await sheetsGet(token, ranges);
-  const houseRows = { kiawah: kiawahRows, sanibel: sanibelRows, vero: veroRows };
-
-  const itemById = {};
-  (costItems || []).forEach(c => { itemById[c.id] = c; });
-
-  // Cost item formulas vs Custom Plan column D
-  for (const item of (costItems || [])) {
-    const rowIdx = findRowByName(customRows, item.item_name);
-    if (rowIdx === -1) continue;
-    const sheetFormula = (customRows[rowIdx][2] || '').toString();
-    const key = item.item_name;
-    const action = decideSyncAction(state.costFormulas[key], item.quantity_formula, sheetFormula);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'formula', item: item.item_name, supabase: item.quantity_formula, sheet: sheetFormula }); continue; }
-    if (action === 'push') {
-      const check = validateQuantityFormula(item.quantity_formula);
-      if (!check.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name, reason: check.reason }); continue; }
-      pushes.push({ type: 'formula', item: item.item_name, range: `'${CUSTOM_TAB}'!D${rowIdx + 3}`, value: item.quantity_formula, stateKey: 'costFormulas', stateField: key });
-    } else {
-      const check = validateQuantityFormula(sheetFormula);
-      if (!check.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name, reason: 'sheet formula ' + sheetFormula + ' — ' + check.reason }); continue; }
-      pulls.push({ type: 'formula', costItemId: item.id, item: item.item_name, value: sheetFormula, stateKey: 'costFormulas', stateField: key });
-    }
-  }
-
-  // Cost item amount/unit cost formulas vs Custom Plan columns E/F
-  for (const item of (costItems || [])) {
-    const rowIdx = findRowByName(customRows, item.item_name);
-    if (rowIdx === -1) continue;
-    const rowNum = rowIdx + 3;
-    const sheetAmountFormula = (customRows[rowIdx][3] || '').toString();
-    const sheetUnitCostFormula = (customRows[rowIdx][4] || '').toString();
-
-    const amtKey = item.item_name + '::amount_formula';
-    const amtAction = decideSyncAction(state.costFormulas[amtKey], item.amount_formula, sheetAmountFormula);
-    if (amtAction === 'conflict') { conflicts.push({ type: 'amount_formula', item: item.item_name, supabase: item.amount_formula, sheet: sheetAmountFormula }); }
-    else if (amtAction === 'push') {
-      const amtCheck = validateAmountFormula(item.amount_formula, rowNum);
-      if (!amtCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (amount)', reason: amtCheck.reason }); }
-      else pushes.push({ type: 'formula', item: item.item_name + ' (amount)', range: `'${CUSTOM_TAB}'!E${rowNum}`, value: item.amount_formula, stateKey: 'costFormulas', stateField: amtKey });
-    } else if (amtAction === 'pull') {
-      const amtPullCheck = validateAmountFormula(sheetAmountFormula, rowNum);
-      if (!amtPullCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (amount)', reason: 'sheet: ' + amtPullCheck.reason }); }
-      else pulls.push({ type: 'cost_item_field', costItemId: item.id, field: 'amount_formula', item: item.item_name + ' (amount)', value: sheetAmountFormula, stateKey: 'costFormulas', stateField: amtKey });
-    }
-
-    const unitKey = item.item_name + '::unit_cost_formula';
-    const unitAction = decideSyncAction(state.costFormulas[unitKey], item.unit_cost_formula, sheetUnitCostFormula);
-    if (unitAction === 'conflict') { conflicts.push({ type: 'unit_cost_formula', item: item.item_name, supabase: item.unit_cost_formula, sheet: sheetUnitCostFormula }); }
-    else if (unitAction === 'push') {
-      const unitCheck = validateUnitCostFormula(item.unit_cost_formula, rowNum);
-      if (!unitCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (unit cost)', reason: unitCheck.reason }); }
-      else pushes.push({ type: 'formula', item: item.item_name + ' (unit cost)', range: `'${CUSTOM_TAB}'!F${rowNum}`, value: item.unit_cost_formula, stateKey: 'costFormulas', stateField: unitKey });
-    } else if (unitAction === 'pull') {
-      const unitPullCheck = validateUnitCostFormula(sheetUnitCostFormula, rowNum);
-      if (!unitPullCheck.valid) { conflicts.push({ type: 'formula-refused', item: item.item_name + ' (unit cost)', reason: 'sheet: ' + unitPullCheck.reason }); }
-      else pulls.push({ type: 'cost_item_field', costItemId: item.id, field: 'unit_cost_formula', item: item.item_name + ' (unit cost)', value: sheetUnitCostFormula, stateKey: 'costFormulas', stateField: unitKey });
-    }
-  }
-
-  // House rate amounts vs Master Plan tabs
-  for (const rate of (houseRates || [])) {
-    const ci = itemById[rate.cost_item_id];
-    if (!ci) continue;
-    const rowIdx = findRowByName(houseRows[rate.house], ci.item_name);
-    if (rowIdx === -1) continue;
-    const sheetAmount = Number(houseRows[rate.house][rowIdx][3]) || 0;
-    const key = ci.item_name + '::' + rate.house;
-    const action = decideSyncAction(state.houseRates[key], rate.amount, sheetAmount);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'amount', item: key, supabase: rate.amount, sheet: sheetAmount }); continue; }
-    if (action === 'push') pushes.push({ type: 'amount', item: key, range: `'${HOUSE_TABS[rate.house]}'!E${rowIdx + 3}`, value: rate.amount, stateKey: 'houseRates', stateField: key });
-    else pulls.push({ type: 'amount', costItemId: rate.cost_item_id, house: rate.house, item: key, value: sheetAmount, stateKey: 'houseRates', stateField: key });
-  }
-
-  // Site option costs vs SITE OPTIONS tab
-  for (const opt of (siteOptions || [])) {
-    let rowIdx = -1;
-    for (let i = 0; i < siteRows.length; i++) {
-      if (siteRows[i][1] && String(siteRows[i][1]).trim() === opt.option_label.trim() && siteRows[i][0] && String(siteRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
-    }
-    if (rowIdx === -1) continue;
-    const sheetCost = Number(siteRows[rowIdx][2]) || 0;
-    const key = opt.category + '::' + opt.option_label;
-    const action = decideSyncAction(state.siteOptions[key], opt.cost, sheetCost);
-    if (action === 'unchanged') continue;
-    if (action === 'conflict') { conflicts.push({ type: 'site_cost', item: key, supabase: opt.cost, sheet: sheetCost }); continue; }
-    if (action === 'push') pushes.push({ type: 'site_cost', item: key, range: `'${SITE_TAB}'!C${rowIdx + 2}`, value: opt.cost, stateKey: 'siteOptions', stateField: key });
-    else pulls.push({ type: 'site_cost', siteOptionId: opt.id, item: key, value: sheetCost, stateKey: 'siteOptions', stateField: key });
-  }
-
-  // Basement pricing constants vs ADDITIONAL PRICING tab
-  if (basementPricing) {
-    // additionalPricingRows covers B2:B7 (indices 0-5). B5/B6 (job SF
-    // values) are intentionally skipped here — those aren't synced
-    // constants, they're per-job data written on every estimate.
-    const bpNumericFields = { fixed_cost_per_house: 0, shell_cost_per_sf: 1, finish_cost_per_sf: 2 };
-    Object.keys(bpNumericFields).forEach(field => {
-      const idx = bpNumericFields[field];
-      const sheetVal = Number((additionalPricingRows[idx] && additionalPricingRows[idx][0]) || 0);
-      const supaVal = Number(basementPricing[field]);
-      const action = decideSyncAction(state.basementPricing[field], supaVal, sheetVal);
-      if (action === 'unchanged') return;
-      if (action === 'conflict') { conflicts.push({ type: 'basement_pricing', item: field, supabase: supaVal, sheet: sheetVal }); return; }
-      if (action === 'push') pushes.push({ type: 'basement_pricing', item: field, range: `'${ADDITIONAL_PRICING_TAB}'!${ADDITIONAL_PRICING_CELLS[field]}`, value: supaVal, stateKey: 'basementPricing', stateField: field });
-      else pulls.push({ type: 'basement_pricing', field, item: field, value: sheetVal, stateKey: 'basementPricing', stateField: field });
-    });
-
-    // total_cost_formula is text (a formula string), not a number.
-    const sheetTotalFormula = ((additionalPricingRows[5] && additionalPricingRows[5][0]) || '').toString();
-    const supaTotalFormula = basementPricing.total_cost_formula || '';
-    const tfAction = decideSyncAction(state.basementPricing.total_cost_formula, supaTotalFormula, sheetTotalFormula);
-    if (tfAction === 'conflict') conflicts.push({ type: 'basement_pricing', item: 'total_cost_formula', supabase: supaTotalFormula, sheet: sheetTotalFormula });
-    else if (tfAction === 'push') pushes.push({ type: 'formula', item: 'total_cost_formula', range: `'${ADDITIONAL_PRICING_TAB}'!B7`, value: supaTotalFormula, stateKey: 'basementPricing', stateField: 'total_cost_formula' });
-    else if (tfAction === 'pull') pulls.push({ type: 'basement_pricing', field: 'total_cost_formula', item: 'total_cost_formula', value: sheetTotalFormula, stateKey: 'basementPricing', stateField: 'total_cost_formula' });
-  }
-
-  return { token, state, pushes, pulls, conflicts };
+// Adds one preview row if the Sheet's current value differs from what's
+// in Supabase right now. `numeric` compares as Number (amounts/costs);
+// otherwise compares as trimmed strings (formulas, which are text).
+function pushRowIfChanged(rows, label, table, id, field, current, next, validation, numeric) {
+  const changed = numeric
+    ? (Number(current) || 0) !== (Number(next) || 0)
+    : String(current || '').trim() !== String(next || '').trim();
+  rows.push({ label, table, id, field, current, next, valid: validation.valid, reason: validation.reason, changed });
 }
 
-async function syncChangesToSheets() {
-  const statusEl = document.getElementById('sync-status');
-  const modal = document.getElementById('sync-modal');
-  const body = document.getElementById('sync-modal-body');
-  const applyBtn = document.getElementById('sync-apply-btn');
-  statusEl.textContent = 'Checking for changes…';
+// The known, importable sheet tabs — Custom Plan, every base plan house
+// (dynamic, from ALL_HOUSES), Site Options, Additional Pricing. Anything
+// else in the actual spreadsheet (Sales Notes, Template, etc.) isn't a
+// recognized cost source and isn't offered here.
+function importableTabs() {
+  const houseTabs = getHouseTabs();
+  const tabs = [{ name: CUSTOM_TAB }];
+  ALL_HOUSES.forEach(h => tabs.push({ name: houseTabs[h.key], house: h.key }));
+  tabs.push({ name: SITE_TAB });
+  tabs.push({ name: ADDITIONAL_PRICING_TAB });
+  return tabs;
+}
+
+function openImportModal() {
+  importPreview = null;
+  const search = document.getElementById('import-search');
+  search.value = '';
+  search.style.display = '';
+  document.getElementById('import-confirm-btn').style.display = 'none';
+  renderImportTabList();
+  document.getElementById('import-modal').classList.add('active');
+}
+
+function closeImportModal() {
+  document.getElementById('import-modal').classList.remove('active');
+  importPreview = null;
+}
+
+function renderImportTabList() {
+  const q = (document.getElementById('import-search').value || '').toLowerCase();
+  const body = document.getElementById('import-modal-body');
+  const matches = importableTabs().filter(t => t.name.toLowerCase().includes(q));
+  if (!matches.length) { body.innerHTML = '<p>No matching sheet tabs.</p>'; return; }
+  body.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' +
+    matches.map(t => `<li style="padding:8px;border-bottom:1px solid #eee;cursor:pointer;" onclick="loadImportPreview('${t.name.replace(/'/g, "\\'")}')">${t.name}</li>`).join('') +
+    '</ul>';
+}
+
+// Reads one tab's current values straight from the Sheet (same ranges/
+// column layout the old sync tool used) and compares each KNOWN row
+// (matched by name, same findRowByName as before) against what's in
+// Supabase now. Nothing is written here — loadImportPreview only builds
+// the preview; confirmImport does the actual write.
+async function loadImportPreview(tabName) {
+  const body = document.getElementById('import-modal-body');
+  body.innerHTML = '<p>Loading "' + tabName + '" from the Sheet…</p>';
+  document.getElementById('import-search').style.display = 'none';
+  document.getElementById('import-confirm-btn').style.display = 'none';
   try {
-    pendingSyncPlan = await computeSyncPlan();
-    const { pushes, pulls, conflicts } = pendingSyncPlan;
-    let html = '';
-    html += `<p><strong>${pushes.length}</strong> change(s) to push (Supabase → Sheet):</p><ul>` +
-      pushes.map(p => `<li>[${p.type}] ${p.item} → ${p.value}</li>`).join('') + '</ul>';
-    html += `<p><strong>${pulls.length}</strong> change(s) to pull (Sheet → Supabase):</p><ul>` +
-      pulls.map(p => `<li>[${p.type}] ${p.item} → ${p.value}</li>`).join('') + '</ul>';
-    html += `<p style="color:${conflicts.length ? '#d93025' : '#5f6368'};"><strong>${conflicts.length}</strong> conflict(s) — will NOT be auto-applied:</p><ul>` +
-      conflicts.map(c => `<li>${c.item} — Supabase=${c.supabase !== undefined ? c.supabase : ''} vs Sheet=${c.sheet !== undefined ? c.sheet : ''} ${c.reason || ''}</li>`).join('') + '</ul>';
-    if (pushes.length === 0 && pulls.length === 0) html += '<p>Nothing to sync — everything already matches.</p>';
-    body.innerHTML = html;
-    applyBtn.style.display = (pushes.length + pulls.length) > 0 ? 'inline-block' : 'none';
-    modal.classList.add('active');
-    statusEl.textContent = '';
+    const token = await getSheetsAccessToken();
+    const houseTabs = getHouseTabs();
+    const rows = [];
+
+    if (tabName === CUSTOM_TAB) {
+      const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
+      const [sheetRows] = await sheetsGet(token, [`'${CUSTOM_TAB}'!B3:F100`]);
+      (costItems || []).forEach(item => {
+        const rowIdx = findRowByName(sheetRows, item.item_name);
+        if (rowIdx === -1) return;
+        const rowNum = rowIdx + 3;
+        const sheetQty = (sheetRows[rowIdx][2] || '').toString();
+        const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
+        const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
+        pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty));
+        pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateAmountFormula(sheetAmt, rowNum));
+        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateUnitCostFormula(sheetUnit, rowNum));
+      });
+    } else if (Object.values(houseTabs).includes(tabName)) {
+      const house = Object.keys(houseTabs).find(k => houseTabs[k] === tabName);
+      const { data: costItems } = await sb.from('cost_items').select('id,item_name');
+      const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', house);
+      const rateByItemId = {};
+      (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
+      const [sheetRows] = await sheetsGet(token, [`'${tabName}'!B3:E100`]);
+      (costItems || []).forEach(item => {
+        const hr = rateByItemId[item.id];
+        if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
+        const rowIdx = findRowByName(sheetRows, item.item_name);
+        if (rowIdx === -1) return;
+        const sheetAmt = Number(sheetRows[rowIdx][3]) || 0;
+        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmt, { valid: true }, true);
+      });
+    } else if (tabName === SITE_TAB) {
+      const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
+      const [sheetRows] = await sheetsGet(token, [`'${SITE_TAB}'!A2:C60`]);
+      (siteOptions || []).forEach(opt => {
+        let rowIdx = -1;
+        for (let i = 0; i < sheetRows.length; i++) {
+          if (sheetRows[i][1] && String(sheetRows[i][1]).trim() === opt.option_label.trim() && sheetRows[i][0] && String(sheetRows[i][0]).trim() === opt.category.trim()) { rowIdx = i; break; }
+        }
+        if (rowIdx === -1) return;
+        const sheetCost = Number(sheetRows[rowIdx][2]) || 0;
+        pushRowIfChanged(rows, opt.category + ' — ' + opt.option_label, 'site_options', opt.id, 'cost', opt.cost, sheetCost, { valid: true }, true);
+      });
+    } else if (tabName === ADDITIONAL_PRICING_TAB) {
+      const { data: bpRows } = await sb.from('basement_pricing').select('*').eq('id', 1);
+      const bp = bpRows && bpRows[0];
+      const [sheetRows] = await sheetsGet(token, [`'${ADDITIONAL_PRICING_TAB}'!B2:B7`]);
+      if (bp) {
+        const bpNumericFields = { fixed_cost_per_house: 0, shell_cost_per_sf: 1, finish_cost_per_sf: 2 };
+        Object.keys(bpNumericFields).forEach(field => {
+          const idx = bpNumericFields[field];
+          const sheetVal = Number((sheetRows[idx] && sheetRows[idx][0]) || 0);
+          pushRowIfChanged(rows, field, 'basement_pricing', bp.id, field, bp[field], sheetVal, { valid: true }, true);
+        });
+        const sheetTotalFormula = ((sheetRows[5] && sheetRows[5][0]) || '').toString();
+        pushRowIfChanged(rows, 'total_cost_formula', 'basement_pricing', bp.id, 'total_cost_formula', bp.total_cost_formula || '', sheetTotalFormula, { valid: true });
+      }
+    }
+
+    importPreview = { tab: tabName, rows };
+    renderImportPreview();
   } catch (e) {
-    statusEl.textContent = '';
-    alert('Sync check failed: ' + e.message);
+    body.innerHTML = '<p style="color:#d93025;">Error loading "' + tabName + '": ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="openImportModal()">‹ Back to list</button>';
   }
 }
 
-async function applySyncChanges() {
-  if (!pendingSyncPlan) return;
-  const { token, state, pushes, pulls } = pendingSyncPlan;
-  const applyBtn = document.getElementById('sync-apply-btn');
-  applyBtn.disabled = true;
-  applyBtn.textContent = 'Applying…';
+function renderImportPreview() {
+  const body = document.getElementById('import-modal-body');
+  const confirmBtn = document.getElementById('import-confirm-btn');
+  const { tab, rows } = importPreview;
+  const changed = rows.filter(r => r.changed);
+  const importable = changed.filter(r => r.valid);
+  const skipped = changed.filter(r => !r.valid);
+
+  let html = '<button class="modal-btn btn-cancel" style="margin-bottom:10px;" onclick="openImportModal()">‹ Back to list</button>';
+  html += `<p><strong>${tab}</strong> — ${importable.length} change(s) found` + (skipped.length ? `, ${skipped.length} skipped (unrecognized format)` : '') + `:</p>`;
+  if (!changed.length) {
+    html += '<p>Nothing has changed — Supabase already matches this tab.</p>';
+  } else {
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+      '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
+      changed.map(r => `<tr style="border-bottom:1px solid #f1f3f4;${r.valid ? '' : 'color:#d93025;'}">` +
+        `<td style="padding:4px;">${r.label}${r.valid ? '' : ' ⚠ ' + r.reason}</td>` +
+        `<td style="padding:4px;">${r.current}</td><td style="padding:4px;">${r.next}</td></tr>`).join('') +
+      '</table>';
+  }
+  body.innerHTML = html;
+  confirmBtn.style.display = importable.length ? 'inline-block' : 'none';
+}
+
+async function confirmImport() {
+  if (!importPreview) return;
+  const confirmBtn = document.getElementById('import-confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Importing…';
+  const importable = importPreview.rows.filter(r => r.changed && r.valid);
   const results = [];
-
-  for (const push of pushes) {
-    try {
-      await sheetsWriteOne(token, push.range, push.type === 'formula' ? push.value : String(push.value));
-      const [confirm] = await sheetsGet(token, [push.range]);
-      const written = confirm[0] && confirm[0][0];
-      const ok = push.type === 'formula' ? String(written) === push.value : Number(written) === Number(push.value);
-      if (!ok) { results.push('FAILED verification: ' + push.item + ' (sheet shows ' + written + ')'); continue; }
-      state[push.stateKey][push.stateField] = push.value;
-      results.push('Pushed: ' + push.item);
-    } catch (e) { results.push('FAILED: ' + push.item + ' — ' + e.message); }
+  for (const r of importable) {
+    const { error } = await sb.from(r.table).update({ [r.field]: r.next }).eq('id', r.id);
+    results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported: ' + r.label));
   }
-
-  for (const pull of pulls) {
-    try {
-      let error;
-      if (pull.type === 'formula') ({ error } = await sb.from('cost_items').update({ quantity_formula: pull.value }).eq('id', pull.costItemId));
-      else if (pull.type === 'amount') ({ error } = await sb.from('house_rates').update({ amount: pull.value }).eq('cost_item_id', pull.costItemId).eq('house', pull.house));
-      else if (pull.type === 'site_cost') ({ error } = await sb.from('site_options').update({ cost: pull.value }).eq('id', pull.siteOptionId));
-      else if (pull.type === 'basement_pricing') ({ error } = await sb.from('basement_pricing').update({ [pull.field]: pull.value }).eq('id', 1));
-      else if (pull.type === 'cost_item_field') ({ error } = await sb.from('cost_items').update({ [pull.field]: pull.value }).eq('id', pull.costItemId));
-      if (error) { results.push('FAILED: ' + pull.item + ' — ' + error.message); continue; }
-      state[pull.stateKey][pull.stateField] = pull.value;
-      results.push('Pulled: ' + pull.item);
-    } catch (e) { results.push('FAILED: ' + pull.item + ' — ' + e.message); }
-  }
-
-  saveSyncState(state);
-  document.getElementById('sync-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(r => `<li>${r}</li>`).join('') + '</ul>';
-  applyBtn.style.display = 'none';
-  pendingSyncPlan = null;
+  document.getElementById('import-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(x => `<li>${x}</li>`).join('') + '</ul>' +
+    '<button class="modal-btn btn-cancel" onclick="closeImportModal()">Close</button>';
+  confirmBtn.style.display = 'none';
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = 'Confirm Import';
+  importPreview = null;
   loadSheetData();
-}
-
-function closeSyncModal() {
-  document.getElementById('sync-modal').classList.remove('active');
-  const applyBtn = document.getElementById('sync-apply-btn');
-  applyBtn.disabled = false;
-  applyBtn.textContent = 'Apply These Changes';
 }
 </script>
 </body>
