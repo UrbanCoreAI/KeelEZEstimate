@@ -956,7 +956,6 @@
     <div class="hdr-title">EZEstimate</div>
     <div class="hdr-user">
       <span class="hdr-email" id="hdr-email"></span>
-      <a class="btn-signout" href="rates.html" style="text-decoration:none;display:inline-flex;align-items:center;">⚙ Rates</a>
       <button class="btn-signout" id="btn-signout">Sign out</button>
     </div>
   </header>
@@ -1667,6 +1666,32 @@ function tryExtensionHandoff(items, customItems, siteOptions, slowConnection, no
 // ═══════════════════════════════════════════════════════════
 // Auth — Google Identity Services
 // ═══════════════════════════════════════════════════════════
+// GIS's token client is stateless in-memory by default — nothing about
+// the access token survives a reload on its own, which is why signing
+// in used to be needed on every single page load. Caching the token
+// (with its real expiry, minus a safety buffer) in localStorage fixes
+// the common case; a background silent-reauth attempt below covers a
+// reload after the ~1hr token itself has expired, as long as the
+// browser still has an active Google session and consent from before.
+const AUTH_STORAGE_KEY = 'keelAuthToken';
+function saveAuthToken(token, expiresInSeconds) {
+  try {
+    const expiresAt = Date.now() + (Number(expiresInSeconds) || 3600) * 1000 - 60000;
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token, expiresAt }));
+  } catch (e) {}
+}
+function loadStoredAuthToken() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
+    if (parsed && parsed.token && parsed.expiresAt > Date.now()) return parsed;
+  } catch (e) {}
+  return null;
+}
+function clearStoredAuthToken() {
+  try { localStorage.removeItem(AUTH_STORAGE_KEY); } catch (e) {}
+}
+let silentAuthAttempted = false;
+
 window.addEventListener('load', () => {
   if (CLIENT_ID === 'YOUR_GOOGLE_OAUTH_CLIENT_ID_HERE') {
     showStatus('⚠ Configure CLIENT_ID in the script to enable Google sign-in.', 'error');
@@ -1684,44 +1709,76 @@ window.addEventListener('load', () => {
   }, 100);
 });
 
+async function onSignedIn(token) {
+  accessToken = token;
+
+  // Fetch user info
+  try {
+    const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: 'Bearer ' + accessToken }
+    }).then(r => r.json());
+    hdrEmail.textContent = info.email || info.name || '';
+  } catch(_) {}
+
+  loginScreen.classList.add('hidden');
+  appEl.classList.remove('hidden');
+  $('sales-notes').value = '';
+}
+
 function initAuth() {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     callback: async (response) => {
       if (response.error) {
+        if (silentAuthAttempted) {
+          // Background attempt right after page load, not a click the
+          // user made — fail quietly and just leave the normal "Sign in
+          // with Google" button showing, instead of surfacing an error
+          // for something the user never asked for.
+          silentAuthAttempted = false;
+          return;
+        }
         showStatus('Sign-in failed: ' + response.error, 'error');
         btnSignin.disabled = false;
         btnSignin.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M17.64 9.205c0-.639-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg> Sign in with Google';
         return;
       }
-      accessToken = response.access_token;
-
-      // Fetch user info
-      try {
-        const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: 'Bearer ' + accessToken }
-        }).then(r => r.json());
-        hdrEmail.textContent = info.email || info.name || '';
-      } catch(_) {}
-
-      loginScreen.classList.add('hidden');
-      appEl.classList.remove('hidden');
-      $('sales-notes').value = '';
+      silentAuthAttempted = false;
+      saveAuthToken(response.access_token, response.expires_in);
+      await onSignedIn(response.access_token);
     }
   });
+
+  // Remembering sign-in across reloads: reuse a still-valid cached token
+  // first (no network round-trip at all), otherwise try one silent,
+  // no-UI reauth in the background — this only succeeds if the browser
+  // still has an active Google session and consent from before, and
+  // fails invisibly if not, leaving the normal button for the user.
+  const stored = loadStoredAuthToken();
+  if (stored) {
+    onSignedIn(stored.token);
+  } else {
+    silentAuthAttempted = true;
+    tokenClient.requestAccessToken({ prompt: 'none' });
+  }
 }
 
 btnSignin.addEventListener('click', () => {
   if (!tokenClient) return;
   btnSignin.disabled = true;
   btnSignin.innerHTML = '<span class="spin"></span> Signing in…';
-  tokenClient.requestAccessToken({ prompt: 'consent' });
+  // No forced "consent" screen here — lets Google skip straight to a
+  // token (or at most a quick account picker) when this browser already
+  // granted access before, instead of the full permissions screen every
+  // single time.
+  tokenClient.requestAccessToken({ prompt: '' });
 });
 
 btnSignout.addEventListener('click', () => {
   if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
   accessToken = null;
+  clearStoredAuthToken();
   appEl.classList.add('hidden');
   loginScreen.classList.remove('hidden');
   prereqWrap.classList.remove('show');
