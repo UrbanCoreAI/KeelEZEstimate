@@ -1273,10 +1273,11 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null); return; }
       const rowNum = rowIdx + 3;
       const sheetQty = (sheetRows[rowIdx][2] || '').toString();
-      const sheetAmt = (sheetRows[rowIdx][3] || '').toString();
       const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
       pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
-      pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, validateFormulaOrNumericCell(sheetAmt, validateAmountFormula(sheetAmt, rowNum)), false, 'E' + rowNum);
+      // Amount (column E) is deliberately left blank on the Custom Plan
+      // tab — it only ever gets a real value in Supabase, never in the
+      // Sheet — so it's never read, compared, or flagged here.
       pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)), false, 'F' + rowNum);
     });
   } else if (classified.type === 'house') {
@@ -1365,18 +1366,15 @@ function renderImportPreview() {
 
   // Format-drift warning — cells that used to hold a number/formula and
   // now don't (blank, or replaced with text), or a known item whose row
-  // is missing entirely. These are never imported; the "?" opens a log
-  // of the exact cell, what's expected, and what's actually there, so
-  // it's obvious what to go fix in the Sheet without having to guess.
+  // is missing entirely. These are never imported; the "?" opens a
+  // plain-language summary (grouped by cause, item names listed) instead
+  // of a raw cell-by-cell dump.
   if (issues.length) {
-    const patternSummary = summarizeIssuesByKind(issues);
     html += '<div style="background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#d93025;">' +
       '<strong>⚠ ' + issues.length + ' cell(s) don\'t look right and were skipped</strong> — formatting differs from what Write to Estimate/the database expects.' +
-      ' <span onclick="toggleFormatLog()" title="Show exact cells" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
-      '<div style="margin-top:4px;">' + patternSummary + '</div>' +
-      '<div id="import-format-log" style="display:none;margin-top:8px;font-family:monospace;font-size:11px;">' +
-      issues.map(r => `<div style="margin-bottom:4px;">${r.cellRef ? `'${r.tab}'!${r.cellRef}` : `'${r.tab}' (row not found)`} — ${r.label}: ${r.reason}` +
-        `${r.cellRef ? ` — sheet actually has: ${r.next === '' ? '(blank)' : '"' + r.next + '"'}` : ''}</div>`).join('') +
+      ' <span onclick="toggleFormatLog()" title="Show summary" style="cursor:pointer;font-weight:bold;border:1px solid #d93025;border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;">?</span>' +
+      '<div id="import-format-log" style="display:none;margin-top:8px;font-size:12px;">' +
+      renderFormatIssueSummary(issues) +
       '</div></div>';
   }
 
@@ -1401,39 +1399,39 @@ function toggleFormatLog() {
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-// Pattern summary shown above the full cell-by-cell log. Groups by field
-// type first ("73 Amount Formula cell(s)"), then — since the whole point
-// is telling apart "this is one systemic thing" from "these are N
-// unrelated broken cells" — checks whether every row in that group
-// shares the exact same actual value or the exact same diagnosed reason
-// (both common: an entire column going blank at once, or a batch of
-// items that all still average the same pre-expansion set of houses)
-// and folds that into one line instead of leaving it to the full log.
-function summarizeIssuesByKind(issues) {
-  const FIELD_LABELS = {
-    quantity_formula: 'Quantity Formula cell(s)',
-    amount_formula: 'Amount Formula cell(s)',
-    unit_cost_formula: 'Unit Cost Formula cell(s)',
-    total_cost_formula: 'Total Cost Formula cell',
-    amount: 'Amount cell(s)',
-    cost: 'Cost cell(s)'
-  };
+// What the "?" reveals — a plain-language, grouped summary instead of a
+// raw cell-by-cell dump. Groups by (field type, cause) — every row that
+// shares the same field AND the same diagnosed reason (or is uniformly
+// blank) collapses into one bullet naming which items it covers, so "73
+// individually broken cells" reads as "1 systemic thing affecting 73
+// items" and "9 unrelated cells" reads as "1 real pattern affecting
+// these 9 items", each in one line.
+const ISSUE_FIELD_LABELS = {
+  quantity_formula: 'Quantity Formula',
+  amount_formula: 'Amount Formula',
+  unit_cost_formula: 'Unit Cost Formula',
+  total_cost_formula: 'Total Cost Formula',
+  amount: 'Amount',
+  cost: 'Cost'
+};
+function buildIssueSummaryGroups(issues) {
   const groups = {};
   issues.forEach(r => {
-    const kind = r.field === null ? 'item(s) not found in this tab' : (FIELD_LABELS[r.field] || (r.field || 'field').replace(/_/g, ' ') + ' cell(s)');
-    (groups[kind] = groups[kind] || []).push(r);
+    const kind = r.field === null ? 'not found in this tab' : (ISSUE_FIELD_LABELS[r.field] || (r.field || 'field').replace(/_/g, ' '));
+    const isBlank = (r.next === '' || r.next === undefined);
+    const cause = isBlank ? 'all blank' : r.reason;
+    const key = kind + '||' + cause;
+    if (!groups[key]) groups[key] = { kind, cause, items: [] };
+    const itemName = r.label.replace(/ — (Quantity Formula|Amount Formula|Unit Cost Formula|Amount)$/, '');
+    groups[key].items.push(itemName);
   });
-  return Object.keys(groups).map(kind => {
-    const group = groups[kind];
-    let note = '';
-    const uniqueNext = new Set(group.map(r => r.next));
-    if (uniqueNext.size === 1 && (group[0].next === '' || group[0].next === undefined)) {
-      note = ' — all blank';
-    } else {
-      const uniqueReasons = new Set(group.map(r => r.reason));
-      if (uniqueReasons.size === 1) note = ' — ' + group[0].reason;
-    }
-    return `<div style="margin-bottom:2px;"><strong>${group.length}</strong> ${kind}${note}</div>`;
+  return Object.values(groups);
+}
+function renderFormatIssueSummary(issues) {
+  return buildIssueSummaryGroups(issues).map(g => {
+    const shown = g.items.slice(0, 12);
+    const itemList = shown.join(', ') + (g.items.length > shown.length ? `, and ${g.items.length - shown.length} more` : '');
+    return `<div style="margin-bottom:8px;"><strong>${g.items.length} ${g.kind}</strong> — ${g.cause}<br><span style="color:#5f6368;">${itemList}</span></div>`;
   }).join('');
 }
 
