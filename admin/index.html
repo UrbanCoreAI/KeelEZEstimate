@@ -909,15 +909,48 @@ function validateQuantityFormula(formula) {
 // is built from the CURRENT house list (getHouseTabs, sort_order) so it
 // stays correct as base plans are added — it's no longer a fixed
 // Kiawah/Sanibel/Vero literal.
+// Whitespace inside a formula (extra spaces after a comma, etc.) doesn't
+// change what it computes — comparisons below ignore all whitespace so a
+// cosmetic difference never gets flagged as a real problem.
+function normalizeFormula(s) { return (s || '').replace(/\s+/g, ''); }
+
 function validateAmountFormula(formula, row) {
   const expected = '=D' + row + '*F' + row;
-  return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
+  return normalizeFormula(formula) === normalizeFormula(expected) ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
+
+// When the Unit Cost formula doesn't match, the single most common real
+// cause is that it references a different SET of base-plan houses than
+// what's currently in the houses table (a base plan was added/renamed
+// since this formula was last written) — diagnose that specifically
+// (which houses are missing/extra) instead of dumping two full formula
+// strings side by side, which reads as noise for a one-word difference.
 function validateUnitCostFormula(formula, row) {
   const houseTabs = getHouseTabs();
-  const refs = ALL_HOUSES.map(h => `'${houseTabs[h.key]}'!F${row}`).join(',');
-  const expected = '=AVERAGE(' + refs + ')';
-  return (formula || '').trim() === expected ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
+  const expectedTabs = ALL_HOUSES.map(h => houseTabs[h.key]);
+  const expected = '=AVERAGE(' + expectedTabs.map(t => `'${t}'!F${row}`).join(',') + ')';
+  if (normalizeFormula(formula) === normalizeFormula(expected)) return { valid: true };
+
+  const f = (formula || '').trim();
+  if (/^=AVERAGE\(/i.test(f)) {
+    const actualTabs = [];
+    const refRe = /'([^']+)'!F\d+/g;
+    let m;
+    while ((m = refRe.exec(f)) !== null) actualTabs.push(m[1]);
+    if (actualTabs.length) {
+      const expectedSet = new Set(expectedTabs);
+      const actualSet = new Set(actualTabs);
+      const missing = expectedTabs.filter(t => !actualSet.has(t)).map(t => t.replace('2026 MASTER PLAN ', ''));
+      const extra = actualTabs.filter(t => !expectedSet.has(t)).map(t => t.replace('2026 MASTER PLAN ', ''));
+      if (missing.length || extra.length) {
+        const parts = [];
+        if (missing.length) parts.push('missing from average: ' + missing.join(', '));
+        if (extra.length) parts.push('extra in average: ' + extra.join(', '));
+        return { valid: false, reason: parts.join('; ') };
+      }
+    }
+  }
+  return { valid: false, reason: 'expected exactly "' + expected + '"' };
 }
 
 // Numeric cells (amounts, costs, basement constants) don't have a fixed
@@ -1368,11 +1401,15 @@ function toggleFormatLog() {
   if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-// One-line pattern summary shown above the full cell-by-cell log — "73
-// Amount Formula cells, 2 items not found" reads in a glance instead of
-// having to open the log and count for yourself.
+// Pattern summary shown above the full cell-by-cell log. Groups by field
+// type first ("73 Amount Formula cell(s)"), then — since the whole point
+// is telling apart "this is one systemic thing" from "these are N
+// unrelated broken cells" — checks whether every row in that group
+// shares the exact same actual value or the exact same diagnosed reason
+// (both common: an entire column going blank at once, or a batch of
+// items that all still average the same pre-expansion set of houses)
+// and folds that into one line instead of leaving it to the full log.
 function summarizeIssuesByKind(issues) {
-  const counts = {};
   const FIELD_LABELS = {
     quantity_formula: 'Quantity Formula cell(s)',
     amount_formula: 'Amount Formula cell(s)',
@@ -1381,11 +1418,23 @@ function summarizeIssuesByKind(issues) {
     amount: 'Amount cell(s)',
     cost: 'Cost cell(s)'
   };
+  const groups = {};
   issues.forEach(r => {
     const kind = r.field === null ? 'item(s) not found in this tab' : (FIELD_LABELS[r.field] || (r.field || 'field').replace(/_/g, ' ') + ' cell(s)');
-    counts[kind] = (counts[kind] || 0) + 1;
+    (groups[kind] = groups[kind] || []).push(r);
   });
-  return Object.keys(counts).map(k => '<strong>' + counts[k] + '</strong> ' + k).join(', ') + '.';
+  return Object.keys(groups).map(kind => {
+    const group = groups[kind];
+    let note = '';
+    const uniqueNext = new Set(group.map(r => r.next));
+    if (uniqueNext.size === 1 && (group[0].next === '' || group[0].next === undefined)) {
+      note = ' — all blank';
+    } else {
+      const uniqueReasons = new Set(group.map(r => r.reason));
+      if (uniqueReasons.size === 1) note = ' — ' + group[0].reason;
+    }
+    return `<div style="margin-bottom:2px;"><strong>${group.length}</strong> ${kind}${note}</div>`;
+  }).join('');
 }
 
 async function confirmImport() {
