@@ -840,11 +840,14 @@ async function loadSheetData() {
 // could also push Supabase's own values back up into the Sheet —
 // that direction is gone. Nothing here ever writes to the Sheet.
 //
-// Safety gates carried over unchanged:
-//   1. A formula is never written into Supabase unless it matches
-//      one of the confirmed-safe patterns (validateQuantityFormula/
-//      validateAmountFormula/validateUnitCostFormula) — anything
-//      else is shown but skipped, never silently imported.
+// Safety gates:
+//   1. Formula fields (quantity/unit-cost/total-cost) are never flagged
+//      as a format issue — any Sheet formula imports as a normal
+//      change. Numeric fields ARE flagged when a cell goes blank, turns
+//      into non-numeric text, or becomes literal 0 where Supabase had a
+//      real value (validateNumericCell) — an ordinary price change is
+//      never flagged. Flagged cells still import by default (the Sheet
+//      wins) unless "Skip these instead of writing them" is checked.
 //   2. Rows are matched by NAME text (findRowByName), never by
 //      position alone.
 //   3. A Sheet row only gets imported if its name already matches an
@@ -889,110 +892,27 @@ function getHouseTabs() {
   return map;
 }
 
-// --- Formula validator — same 4 confirmed-safe patterns as calc-engine.js ---
-const CELL_REF_RE = /\$?I\$?(\d+)/g;
-const KNOWN_ROWS = [3,4,5,6,7,8,9,10,11,12,18,19,20,21,22,23,24,25,26,27,28,29];
-function validateQuantityFormula(formula) {
-  const f = (formula || '').trim();
-  if (f === '') return { valid: false, reason: 'empty formula' };
-  if (!f.startsWith('=')) return isFinite(Number(f)) ? { valid: true } : { valid: false, reason: 'not a number and not a formula' };
-  const body = f.slice(1);
-  const refs = body.match(CELL_REF_RE);
-  if (!refs) return { valid: false, reason: 'no recognized $I$N / IN references found' };
-  const rebuilt = refs.join('+');
-  const stripped = body.replace(/\s+/g, '');
-  if (stripped !== rebuilt) return { valid: false, reason: 'contains something other than a "+"-joined chain of references — refusing to import' };
-  for (const ref of refs) {
-    const rowNum = parseInt(ref.match(/(\d+)/)[0], 10);
-    if (rowNum === 13) continue;
-    if (!KNOWN_ROWS.includes(rowNum)) return { valid: false, reason: 'reference to row ' + rowNum + ' is not a known measurement row' };
-  }
-  return { valid: true };
-}
-
-// amount_formula/unit_cost_formula follow one fixed, uniform pattern for
-// every tracked cost item (confirmed via full Sheet audit) — no per-row
-// variation, so validation is a strict exact-match gate, same idea as
-// calc-engine.js's copies of these two functions. The unit-cost AVERAGE
-// is built from the CURRENT house list (getHouseTabs, sort_order) so it
-// stays correct as base plans are added — it's no longer a fixed
-// Kiawah/Sanibel/Vero literal.
-// Whitespace inside a formula (extra spaces after a comma, etc.) doesn't
-// change what it computes — comparisons below ignore all whitespace so a
-// cosmetic difference never gets flagged as a real problem.
-function normalizeFormula(s) { return (s || '').replace(/\s+/g, ''); }
-
-function validateAmountFormula(formula, row) {
-  const expected = '=D' + row + '*F' + row;
-  return normalizeFormula(formula) === normalizeFormula(expected) ? { valid: true } : { valid: false, reason: 'expected exactly "' + expected + '"' };
-}
-
-// When the Unit Cost formula doesn't match, the single most common real
-// cause is that it references a different SET of base-plan houses than
-// what's currently in the houses table (a base plan was added/renamed
-// since this formula was last written) — diagnose that specifically
-// (which houses are missing/extra) instead of dumping two full formula
-// strings side by side, which reads as noise for a one-word difference.
-function validateUnitCostFormula(formula, row) {
-  const houseTabs = getHouseTabs();
-  const expectedTabs = ALL_HOUSES.map(h => houseTabs[h.key]);
-  const expected = '=AVERAGE(' + expectedTabs.map(t => `'${t}'!F${row}`).join(',') + ')';
-  if (normalizeFormula(formula) === normalizeFormula(expected)) return { valid: true };
-
-  const f = (formula || '').trim();
-  if (/^=AVERAGE\(/i.test(f)) {
-    const actualTabs = [];
-    const refRe = /'([^']+)'!F\d+/g;
-    let m;
-    while ((m = refRe.exec(f)) !== null) actualTabs.push(m[1]);
-    if (actualTabs.length) {
-      const expectedSet = new Set(expectedTabs);
-      const actualSet = new Set(actualTabs);
-      const missing = expectedTabs.filter(t => !actualSet.has(t)).map(t => t.replace('2026 MASTER PLAN ', ''));
-      const extra = actualTabs.filter(t => !expectedSet.has(t)).map(t => t.replace('2026 MASTER PLAN ', ''));
-      if (missing.length || extra.length) {
-        const parts = [];
-        if (missing.length) parts.push('missing from average: ' + missing.join(', '));
-        if (extra.length) parts.push('extra in average: ' + extra.join(', '));
-        return { valid: false, reason: parts.join('; ') };
-      }
-    }
-  }
-  return { valid: false, reason: 'expected exactly "' + expected + '"' };
-}
-
-// Numeric cells (amounts, costs, basement constants) don't have a fixed
-// formula pattern to check against — instead this catches the two ways
-// a cell can drift into something Write to Estimate/the database can no
-// longer read: gone blank where Supabase currently has a real value, or
-// replaced with non-numeric text (someone typed a note instead of a
-// price). A blank cell where Supabase's own value is already 0 is not
-// flagged — there's nothing to lose there.
+// Formula fields (quantity_formula, unit_cost_formula, total_cost_formula)
+// are never flagged as a format issue regardless of what they contain —
+// any Sheet formula, however different from the usual pattern, is just a
+// normal change to import. Only numeric fields (amounts, costs, basement
+// constants) get flagged, and only for the two ways a cell can lose a
+// real value without anyone noticing: gone blank, or replaced with
+// non-numeric text (someone typed a note instead of a price). A cell
+// that's now literally 0 is treated the same as blank — it's the same
+// "the real number is gone" situation, just typed instead of erased —
+// but only when Supabase's own value wasn't already 0 (nothing to lose
+// there). A normal price change (any other number to any other number)
+// is never flagged; that's just an ordinary update.
 function validateNumericCell(raw, current) {
   const trimmed = (raw === undefined || raw === null) ? '' : String(raw).trim();
+  const hadValue = (Number(current) || 0) !== 0;
   if (trimmed === '') {
-    const hadValue = (Number(current) || 0) !== 0;
     return hadValue ? { valid: false, reason: 'cell is now blank — Supabase currently has ' + current } : { valid: true };
   }
   if (!isFinite(Number(trimmed))) return { valid: false, reason: 'sheet has "' + trimmed + '" instead of a number' };
+  if (Number(trimmed) === 0 && hadValue) return { valid: false, reason: 'cell is now 0 — Supabase currently has ' + current };
   return { valid: true };
-}
-
-// Amount/Unit Cost cells on the Custom Plan tab are meant to hold a live
-// formula (validateAmountFormula/validateUnitCostFormula) — but this is a
-// real, actively-edited business spreadsheet, and a specific item's price
-// legitimately gets overridden with a plain typed-in number sometimes.
-// That's not a format problem (Write to Estimate never reads the Sheet's
-// formula text either way — only Supabase's own stored value), so a
-// formula check that fails only because the cell now holds a valid plain
-// number instead should still import normally. Only genuinely bad content
-// (blank where something existed, or actual non-numeric text) stays
-// flagged.
-function validateFormulaOrNumericCell(raw, formulaCheck) {
-  if (formulaCheck.valid) return formulaCheck;
-  const trimmed = (raw === undefined || raw === null) ? '' : String(raw).trim();
-  if (trimmed !== '' && isFinite(Number(trimmed))) return { valid: true };
-  return formulaCheck;
 }
 
 let sheetsTokenRequestInFlight = null;
@@ -1359,11 +1279,11 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const rowNum = rowIdx + 3;
       const sheetQty = (sheetRows[rowIdx][2] || '').toString();
       const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
-      pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, validateQuantityFormula(sheetQty), false, 'D' + rowNum);
+      pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, { valid: true }, false, 'D' + rowNum);
       // Amount (column E) is deliberately left blank on the Custom Plan
       // tab — it only ever gets a real value in Supabase, never in the
       // Sheet — so it's never read, compared, or flagged here.
-      pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)), false, 'F' + rowNum);
+      pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'F' + rowNum);
     });
   } else if (classified.type === 'house') {
     const { data: costItems } = await sb.from('cost_items').select('id,item_name');
@@ -1623,12 +1543,10 @@ async function confirmImport() {
     if (tabInfo.type === 'custom') {
       const rowIdx = findRowByName(tabInfo.sheetRows, newName);
       if (rowIdx === -1) { results.push('FAILED: ' + r.label + ' — "' + newName + '" not found in the Sheet either'); continue; }
-      const rowNum = rowIdx + 3;
       const sheetQty = (tabInfo.sheetRows[rowIdx][2] || '').toString();
       const sheetUnit = (tabInfo.sheetRows[rowIdx][4] || '').toString();
-      const updates = { item_name: newName };
-      if (validateQuantityFormula(sheetQty).valid) updates.quantity_formula = sheetQty;
-      if (validateFormulaOrNumericCell(sheetUnit, validateUnitCostFormula(sheetUnit, rowNum)).valid) updates.unit_cost_formula = sheetUnit;
+      // Formula fields are never gated — whatever's in the Sheet imports.
+      const updates = { item_name: newName, quantity_formula: sheetQty, unit_cost_formula: sheetUnit };
       const { error } = await sb.from('cost_items').update(updates).eq('id', r.id);
       results.push(error ? ('FAILED: rename ' + r.label + ' — ' + error.message) : ('Renamed + imported: "' + r.label + '" → "' + newName + '"'));
     } else if (tabInfo.type === 'house') {
