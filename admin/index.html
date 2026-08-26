@@ -851,6 +851,20 @@ const CUSTOM_TAB = '2026 CUSTOM PLAN';
 const SITE_TAB = 'SITE OPTIONS';
 const ADDITIONAL_PRICING_TAB = 'ADDITIONAL PRICING';
 
+// A house tab's "BUILDING AREA LOCATION" / "QUANTITIES" section label text
+// -> reference_house_measurements column. Matched by label text (not row
+// number) since these sections' exact row positions vary a little between
+// house tabs. Values here mirror ROW_TO_FIELD in index.html/calc-engine.js.
+const REFERENCE_LABEL_TO_FIELD = {
+  'Basement': 'basement_sf', '1st Floor': 'floor1_sf', '2nd Floor': 'floor2_sf', '3rd Floor': 'floor3_sf',
+  'Attic with Storage': 'attic_storage_sf', 'Habitable Attic': 'habitable_attic_sf',
+  'Front Porch': 'front_porch_sf', 'Rear Porch': 'rear_porch_sf', 'Rear Deck': 'rear_deck_sf', 'Garage': 'garage_sf',
+  '# of Exterior Doors': 'exterior_doors', '# of Windows': 'windows', '# of Baths': 'baths',
+  'LF of Cabinets': 'cabinets_lf', 'LF of Countertop': 'countertop_lf', '# of Staircases': 'staircases',
+  '# of Front Porch Columns': 'porch_columns', '# of Garage Doors': 'garage_doors', '# of Interior Doors': 'interior_doors',
+  'SF of Carpet': 'carpet_sf', 'SF of Hardwood': 'hardwood_sf', 'SF of Tile': 'tile_sf'
+};
+
 let sheetsAccessToken = null;
 let importPreview = null; // { tab, rows: [{label, table, id, field, current, next, valid, reason, changed}] }
 
@@ -1087,7 +1101,7 @@ async function loadImportPreview(tabName) {
       const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
       const rateByItemId = {};
       (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
-      const [sheetRows] = await sheetsGet(token, [`'${tabName}'!B3:E100`]);
+      const [sheetRows, refRows] = await sheetsGet(token, [`'${tabName}'!B3:E100`, `'${tabName}'!H1:J40`]);
       (costItems || []).forEach(item => {
         const hr = rateByItemId[item.id];
         if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
@@ -1095,6 +1109,30 @@ async function loadImportPreview(tabName) {
         if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null); return; }
         const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
         pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
+      });
+
+      // Reference measurements ("Seed Reference Houses") — the raw
+      // basement_sf/floor1_sf/etc. + door/window/etc. counts this same
+      // house tab carries in its BUILDING AREA LOCATION / QUANTITIES
+      // columns (H:J), which is what the public webpage's Load Base Plan
+      // dropdown reads to prefill its form. Matched by LABEL TEXT (never
+      // a fixed row number) so it doesn't care exactly which rows these
+      // land on in the Sheet. A house with no reference_house_measurements
+      // row yet (a brand-new base plan) is treated as everything-currently-0
+      // and seeded fresh via upsert in confirmImport.
+      const { data: refRowData } = await sb.from('reference_house_measurements').select('*').eq('house', classified.house).maybeSingle();
+      const currentRef = refRowData || {};
+      Object.keys(REFERENCE_LABEL_TO_FIELD).forEach(label => {
+        const field = REFERENCE_LABEL_TO_FIELD[label];
+        let matchIdx = -1;
+        for (let i = 0; i < refRows.length; i++) {
+          const cellLabel = String((refRows[i][0] || '')).trim();
+          if (!cellLabel) continue;
+          if (field === 'tile_sf' ? cellLabel.startsWith('SF of Tile') : cellLabel === label) { matchIdx = i; break; }
+        }
+        if (matchIdx === -1) { pushMissingRow(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, currentRef[field] || 0, null); return; }
+        const rawVal = (refRows[matchIdx][1] || '').toString();
+        pushRowIfChanged(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, field, currentRef[field] || 0, rawVal, validateNumericCell(rawVal, currentRef[field] || 0), true, 'I' + (matchIdx + 1));
       });
     } else if (classified.type === 'site') {
       const { data: siteOptions } = await sb.from('site_options').select('id,category,option_label,cost');
@@ -1181,11 +1219,32 @@ async function confirmImport() {
   confirmBtn.textContent = 'Importing…';
   const importable = importPreview.rows.filter(r => r.changed && r.valid);
   const results = [];
-  for (const r of importable) {
+
+  // reference_house_measurements is keyed by "house" (text), not an
+  // "id" row — and a brand-new base plan has no row there yet, so this
+  // needs an upsert, not an update. Group every changed field for the
+  // same house into one upsert call instead of one per field.
+  const refRows = importable.filter(r => r.table === 'reference_house_measurements');
+  const otherRows = importable.filter(r => r.table !== 'reference_house_measurements');
+  if (refRows.length) {
+    const byHouse = {};
+    refRows.forEach(r => {
+      const value = Number(r.next) || 0;
+      (byHouse[r.id] = byHouse[r.id] || { house: r.id })[r.field] = value;
+    });
+    for (const house of Object.keys(byHouse)) {
+      const { error } = await sb.from('reference_house_measurements').upsert(byHouse[house], { onConflict: 'house' });
+      const fields = refRows.filter(r => r.id === house).map(r => r.label).join(', ');
+      results.push(error ? ('FAILED: ' + house + ' reference measurements — ' + error.message) : ('Imported: ' + house + ' — ' + fields));
+    }
+  }
+
+  for (const r of otherRows) {
     const value = r.numeric ? (Number(r.next) || 0) : r.next;
     const { error } = await sb.from(r.table).update({ [r.field]: value }).eq('id', r.id);
     results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported: ' + r.label));
   }
+
   document.getElementById('import-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(x => `<li>${x}</li>`).join('') + '</ul>' +
     '<button class="modal-btn btn-cancel" onclick="closeImportModal()">Close</button>';
   confirmBtn.style.display = 'none';
