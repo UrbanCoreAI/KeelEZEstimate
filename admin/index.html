@@ -658,38 +658,24 @@ async function loadSheetData() {
   // On Custom Plan only: fetch the H/I/J job-data block once, up front, so
   // it can be merged into rows 3-13 (BUILDING AREA) and 18-29 (QUANTITIES)
   // as real columns G(blank)/H/I/J — not a separate block underneath.
-  let jobAreaVals = [], jobQtyVals = [];
   const AREA_LABELS = ['Basement', '1st Floor', '2nd Floor', '3rd Floor', 'Attic with Storage', 'Habitable Attic', 'Front Porch', 'Rear Porch', 'Rear Deck', 'Garage'];
   const QTY_LABELS = ['# of Exterior Doors', '# of Windows', '# of Baths', 'LF of Cabinets', 'LF of Countertop', '# of Staircases', '# of Front Porch Columns', '# of Garage Doors', '# of Interior Doors', 'SF of Carpet', 'SF of Hardwood', 'SF of Tile'];
+
+  // Build the same job_quantities shape calc-engine.js uses, so the
+  // Quantity column can show the REAL evaluated number instead of a
+  // hardcoded placeholder. NOTE: this is a fresh LIVE read straight off the
+  // Sheet, every time this tab opens — it does NOT come from (or write to)
+  // Supabase's job_quantities table at all, which is why this view always
+  // looks right even when Import from Sheet hasn't synced job_quantities
+  // (see fetchCustomPlanAreaQty's other caller, buildRowsForTab, for that).
+  let jq = {};
   if (activeTab === '2026 CUSTOM PLAN') {
     try {
       const token = await getSheetsAccessToken();
-      // Computed values, not formula text — I3 is now a live formula
-      // (='ADDITIONAL PRICING'!B5+'ADDITIONAL PRICING'!B6) and I13 always
-      // was one (=SUM(I3:I12)), so this needs UNFORMATTED_VALUE, not the
-      // shared sheetsGet()'s FORMULA render mode (which would show the
-      // literal formula text here instead of the actual number).
-      const q = ['I3:I13', 'I18:I29'].map(r => 'ranges=' + encodeURIComponent(`'${CUSTOM_TAB}'!${r}`)).join('&');
-      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
-      const valBody = await valRes.json();
-      if (!valRes.ok) throw new Error(JSON.stringify(valBody));
-      [jobAreaVals, jobQtyVals] = valBody.valueRanges.map(vr => vr.values || []);
+      jq = await fetchCustomPlanAreaQty(token);
     } catch (e) {
       console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
     }
-  }
-
-  // Build the same job_quantities shape calc-engine.js uses, from the raw
-  // values just fetched above, so the Quantity column can show the REAL
-  // evaluated number instead of a hardcoded placeholder.
-  const jq = {};
-  if (activeTab === '2026 CUSTOM PLAN') {
-    // jobAreaVals[0] = I3 (basement, excluded from TOTAL_AREA_ROWS — see
-    // calc-engine.js), jobAreaVals[1..9] = I4-I12, jobAreaVals[10] = I13 (TOTAL AREA)
-    const AREA_FIELD_BY_OFFSET = { 0: 'basement_sf', 1: 'floor1_sf', 2: 'floor2_sf', 3: 'floor3_sf', 4: 'attic_storage_sf', 5: 'habitable_attic_sf', 6: 'front_porch_sf', 7: 'rear_porch_sf', 8: 'rear_deck_sf', 9: 'garage_sf' };
-    Object.keys(AREA_FIELD_BY_OFFSET).forEach(off => { jq[AREA_FIELD_BY_OFFSET[off]] = Number((jobAreaVals[off] && jobAreaVals[off][0]) || 0); });
-    const QTY_FIELD_BY_OFFSET = { 0: 'exterior_doors', 1: 'windows', 2: 'baths', 3: 'cabinets_lf', 4: 'countertop_lf', 5: 'staircases', 6: 'porch_columns', 7: 'garage_doors', 8: 'interior_doors', 9: 'carpet_sf', 10: 'hardwood_sf', 11: 'tile_sf' };
-    Object.keys(QTY_FIELD_BY_OFFSET).forEach(off => { jq[QTY_FIELD_BY_OFFSET[off]] = Number((jobQtyVals[off] && jobQtyVals[off][0]) || 0); });
   }
   const TOTAL_AREA_FIELDS = ['basement_sf', 'floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf'];
   function totalAreaSum(j) { return TOTAL_AREA_FIELDS.reduce((sum, f) => sum + (Number(j[f]) || 0), 0); }
@@ -714,16 +700,16 @@ async function loadSheetData() {
     if (!(activeTab === '2026 CUSTOM PLAN')) return '<td></td><td></td><td></td><td></td>';
     if (rowNum >= 3 && rowNum <= 12) {
       const label = AREA_LABELS[rowNum - 3];
-      const val = (jobAreaVals[rowNum - 3] && jobAreaVals[rowNum - 3][0]) || 0;
+      const val = jq[ADMIN_ROW_TO_FIELD[rowNum]] || 0;
       return `<td></td><td>${label}</td><td>${val}</td><td>SF</td>`;
     }
     if (rowNum === 13) {
-      const val = (jobAreaVals[10] && jobAreaVals[10][0]) || 0;
+      const val = totalAreaSum(jq);
       return `<td></td><td><strong>TOTAL AREA</strong></td><td><strong>${val}</strong></td><td>SF</td>`;
     }
     if (rowNum >= 18 && rowNum <= 29) {
       const label = QTY_LABELS[rowNum - 18];
-      const val = (jobQtyVals[rowNum - 18] && jobQtyVals[rowNum - 18][0]) || 0;
+      const val = jq[ADMIN_ROW_TO_FIELD[rowNum]] || 0;
       return `<td></td><td>${label}</td><td>${val}</td><td>EA</td>`;
     }
     return '<td></td><td></td><td></td><td></td>';
@@ -942,6 +928,32 @@ async function renderTakeoffHistory() {
 const GOOGLE_CLIENT_ID = '453224496219-qbeam8al28h07q5fcppavmg95p66sjup.apps.googleusercontent.com';
 const SHEET_ID = '1iO37IiTagtu4OGEZSHA5C62tPRc5HOKMpq0UcsUI9ig';
 const CUSTOM_TAB = '2026 CUSTOM PLAN';
+
+// The Custom Plan tab's BUILDING AREA (I3:I13) / QUANTITIES (I18:I29) block,
+// by position within each fetched range, mapped to job_quantities' column
+// names. Shared between the grid's live display (loadSheetData, below) and
+// Import from Sheet's job_quantities sync (buildRowsForTab) — one copy
+// instead of two hand-synced ones (the previous two-copy setup is exactly
+// what the extension's own job_quantities.sql migration comment already
+// warned drifts out of sync over time with no shared build step).
+const JQ_AREA_FIELD_BY_OFFSET = { 0: 'basement_sf', 1: 'floor1_sf', 2: 'floor2_sf', 3: 'floor3_sf', 4: 'attic_storage_sf', 5: 'habitable_attic_sf', 6: 'front_porch_sf', 7: 'rear_porch_sf', 8: 'rear_deck_sf', 9: 'garage_sf' };
+const JQ_QTY_FIELD_BY_OFFSET = { 0: 'exterior_doors', 1: 'windows', 2: 'baths', 3: 'cabinets_lf', 4: 'countertop_lf', 5: 'staircases', 6: 'porch_columns', 7: 'garage_doors', 8: 'interior_doors', 9: 'carpet_sf', 10: 'hardwood_sf', 11: 'tile_sf' };
+
+// Reads the Custom Plan tab's own I-column area/count block as actual
+// computed numbers (UNFORMATTED_VALUE — I3 and I13 are live Sheet formulas,
+// so the shared sheetsGet()'s FORMULA render mode would return formula text
+// here instead of the number). Used by both the grid view and the importer.
+async function fetchCustomPlanAreaQty(token) {
+  const q = ['I3:I13', 'I18:I29'].map(r => 'ranges=' + encodeURIComponent(`'${CUSTOM_TAB}'!${r}`)).join('&');
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
+  const body = await res.json();
+  if (!res.ok) throw new Error(JSON.stringify(body));
+  const [areaVals, qtyVals] = body.valueRanges.map(vr => vr.values || []);
+  const jq = {};
+  Object.keys(JQ_AREA_FIELD_BY_OFFSET).forEach(off => { jq[JQ_AREA_FIELD_BY_OFFSET[off]] = Number((areaVals[off] && areaVals[off][0]) || 0); });
+  Object.keys(JQ_QTY_FIELD_BY_OFFSET).forEach(off => { jq[JQ_QTY_FIELD_BY_OFFSET[off]] = Number((qtyVals[off] && qtyVals[off][0]) || 0); });
+  return jq;
+}
 const SITE_TAB = 'SITE OPTIONS';
 const ADDITIONAL_PRICING_TAB = 'ADDITIONAL PRICING';
 
@@ -1376,6 +1388,25 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       // Sheet — so it's never read, compared, or flagged here.
       pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'F' + rowNum);
     });
+
+    // job_quantities sync — the Custom Plan tab's own I-column (BUILDING
+    // AREA / QUANTITIES block) is what quantity_formula text like
+    // "=$I$4+$I$5" actually evaluates against everywhere EXCEPT this admin
+    // page's own live grid view (which cheats by re-reading the Sheet
+    // directly every time — see fetchCustomPlanAreaQty's other caller in
+    // loadSheetData). Nothing was writing the Sheet's I-column into
+    // job_quantities at all, so the extension's "Write to Estimate" and the
+    // public webpage kept evaluating formulas against whatever was last
+    // manually typed into the extension, not what's actually in the Sheet.
+    // This closes that gap the same way reference_house_measurements
+    // already does for house tabs.
+    const sheetJq = await fetchCustomPlanAreaQty(token);
+    const { data: currentJq } = await sb.from('job_quantities').select('*').eq('id', 1).maybeSingle();
+    const jqCurrent = currentJq || {};
+    [...Object.values(JQ_AREA_FIELD_BY_OFFSET), ...Object.values(JQ_QTY_FIELD_BY_OFFSET)].forEach(field => {
+      const sheetVal = String(sheetJq[field] ?? 0);
+      pushRowIfChanged(rows, field + ' (job quantities)', 'job_quantities', 1, field, jqCurrent[field] || 0, sheetVal, validateNumericCell(sheetVal, jqCurrent[field] || 0), true, null);
+    });
   } else if (classified.type === 'house') {
     const { data: costItems } = await sb.from('cost_items').select('id,item_name');
     const { data: houseRates } = await sb.from('house_rates').select('id,cost_item_id,amount').eq('house', classified.house);
@@ -1401,10 +1432,8 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
         { headers: { Authorization: 'Bearer ' + token } }
       );
       const ivBody = await ivRes.json();
-      // TEMP DEBUG — remove once formula solving is confirmed working.
-      if (!ivRes.ok) console.warn('[Keel][DEBUG] I-column fetch failed for ' + tabName + ':', JSON.stringify(ivBody));
+      if (!ivRes.ok) console.warn('[Keel] I-column fetch failed for ' + tabName + ':', JSON.stringify(ivBody));
       if (ivRes.ok) iColVals = ivBody.values || [];
-      console.log('[Keel][DEBUG] iColVals for ' + tabName + ' =', JSON.stringify(iColVals));
     } catch (e) { console.warn('[Keel] could not read I-column values for ' + tabName + ':', e.message); }
 
     // Solves a "=I4+I5"-style formula using iColVals above. Row 13 is the
@@ -1438,8 +1467,6 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const amtCell = (sheetRows[rowIdx][3] || '').toString();
       const amtSolved = evalHouseFormula(amtCell);
       const sheetAmtRaw = amtSolved !== null ? String(amtSolved) : amtCell;
-      // TEMP DEBUG — remove once formula solving is confirmed working.
-      console.log('[Keel][DEBUG]', item.item_name, '| cell D/E raw:', amtCell, '| solved:', amtSolved, '| currently in Supabase (hr.amount):', hr ? hr.amount : '(no row yet)');
       if (!hr) {
         // Brand-new house — no house_rates row exists yet for this item at
         // all (same situation Sullivan/Bonaire/Catalina were in before
@@ -1755,7 +1782,8 @@ async function confirmImport() {
   // needs an upsert, not an update. Group every changed field for the
   // same house into one upsert call instead of one per field.
   const refRows = importable.filter(r => r.table === 'reference_house_measurements');
-  const otherRows = importable.filter(r => r.table !== 'reference_house_measurements');
+  const jqRows = importable.filter(r => r.table === 'job_quantities');
+  const otherRows = importable.filter(r => r.table !== 'reference_house_measurements' && r.table !== 'job_quantities');
   if (refRows.length) {
     const byHouse = {};
     refRows.forEach(r => {
@@ -1767,6 +1795,17 @@ async function confirmImport() {
       const fields = refRows.filter(r => r.id === house).map(r => r.label).join(', ');
       results.push(error ? ('FAILED: ' + house + ' reference measurements — ' + error.message) : ('Imported: ' + house + ' — ' + fields));
     }
+  }
+
+  // job_quantities is a singleton row (id always 1) — same one-upsert-for-
+  // every-changed-field grouping as reference_house_measurements above,
+  // just keyed by a fixed id instead of a house name.
+  if (jqRows.length) {
+    const payload = { id: 1 };
+    jqRows.forEach(r => { payload[r.field] = Number(r.next) || 0; });
+    const { error } = await sb.from('job_quantities').upsert(payload, { onConflict: 'id' });
+    const fields = jqRows.map(r => r.field).join(', ');
+    results.push(error ? ('FAILED: job_quantities — ' + error.message) : ('Imported: job_quantities — ' + fields));
   }
 
   // house_rates rows with id === null were flagged by buildRowsForTab as
