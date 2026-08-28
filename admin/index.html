@@ -780,20 +780,34 @@ async function loadSheetData() {
     let unitFormulaStr = '';
 
     if (activeTab === '2026 CUSTOM PLAN') {
-      // 2026 CUSTOM PLAN is computed by averaging the unit rate of every
-      // base plan house_rates row where include_in_average is true — not
-      // hardcoded to 3 houses. A house that's never had its rate entered
-      // for this item (no house_rates row at all) is skipped too, same as
-      // one explicitly excluded.
-      const includedRates = (r.house_rates || []).filter(h => h.include_in_average);
-      const unitCosts = includedRates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
+      // 2026 CUSTOM PLAN's unit cost is computed by literally parsing which
+      // houses r.unit_cost_formula's AVERAGE(...) actually lists — e.g.
+      // "=AVERAGE('2026 MASTER PLAN KIAWAH'!F20, ...)" — and averaging only
+      // those. This used to instead average every house_rates row flagged
+      // include_in_average=true, which meant a brand-new house (Coronado)
+      // silently joined every average the moment it had any rate at all,
+      // even though the Sheet's own formula was written before that house
+      // existed and never lists it. Whatever the imported formula says to
+      // average is exactly what gets averaged now — nothing added or
+      // dropped beyond what's literally written in it.
+      const houseRefRe = /'([^']+)'!F\d+/g;
+      const matchedHouseKeys = [];
+      let hm;
+      houseRefRe.lastIndex = 0;
+      while ((hm = houseRefRe.exec(r.unit_cost_formula || '')) !== null) {
+        const house = ALL_HOUSES.find(h => houseTabName(h) === hm[1]);
+        if (house) matchedHouseKeys.push(house.key);
+      }
+      // A house listed in the formula but with no house_rates row at all
+      // yet (rate never entered) is skipped — nothing to average for it.
+      const matchedRates = matchedHouseKeys
+        .map(key => (r.house_rates || []).find(h => h.house === key))
+        .filter(Boolean);
+      const unitCosts = matchedRates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
       unitCost = unitCosts.length ? (unitCosts.reduce((s, v) => s + v, 0) / unitCosts.length) : 0;
       qtyVal = evaluateQuantityFormula(r.quantity_formula, jq);
       amtVal = unitCost * qtyVal;
-      const includedLabels = includedRates
-        .map(h => ALL_HOUSES.find(hh => hh.key === h.house)?.label || h.house)
-        .map(l => `'2026 MASTER PLAN ${l.toUpperCase()}'!F${rowNum}`);
-      unitFormulaStr = includedLabels.length ? ('=AVERAGE(' + includedLabels.join(', ') + ')') : '(no houses included)';
+      unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
       qtyVal    = houseRate ? houseRate.quantity : 0;
