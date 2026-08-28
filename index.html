@@ -2052,6 +2052,25 @@ btnGo.addEventListener('click', async () => {
     await sheetsWrite(ZERO_RANGES.map(r => ({ range: r, value: 0 })));
     await sheetsWrite(updates);
 
+    // Also mirror into Supabase's job_quantities — this is what the
+    // extension's "Write to Sheet" already does (background.js
+    // upsertJobQuantities). Without this, the webpage's own "Go" button
+    // never touched job_quantities at all, so the job_quantities_log_takeoff
+    // trigger (-> takeoff_data admin history) never fired for webpage use.
+    // Non-fatal on purpose: a Supabase hiccup here shouldn't block the
+    // Sheet write the user is watching the status bar for.
+    if (sbClient) {
+      try {
+        const jq = buildJobQuantitiesFromInputs();
+        const { error: jqErr } = await sbClient
+          .from('job_quantities')
+          .upsert({ id: 1, ...jq, updated_at: new Date().toISOString() });
+        if (jqErr) console.warn('[Keel] job_quantities upsert failed:', jqErr.message);
+      } catch (jqEx) {
+        console.warn('[Keel] job_quantities upsert failed:', jqEx.message);
+      }
+    }
+
     // Write site options to SITE OPTIONS tab
     // Map: sewer D2-D4, water D5-D6, tap D7-D9, clearing D10-D12, driveway D13-D16, landscaping D17-D19
     const SITE_OPTIONS_MAP = {
