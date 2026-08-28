@@ -959,6 +959,17 @@ const REFERENCE_LABEL_TO_FIELD = {
   'SF of Carpet': 'carpet_sf', 'SF of Hardwood': 'hardwood_sf', 'SF of Tile': 'tile_sf'
 };
 
+// Alternate wording some house tabs use for the same physical measurement
+// as the label on the left (which stays the "canonical" name everywhere
+// else — cost_items formulas, the webpage's Load Base Plan form, etc. all
+// still key off rear_deck_sf/garage_sf regardless of which label found it).
+// Add a house's wording here if it ever comes up "not found" for a
+// measurement that's clearly just named differently, not actually missing.
+const REFERENCE_LABEL_ALIASES = {
+  'Rear Deck': ['Rear Stoop'],
+  'Garage': ['Unfinished Garage']
+};
+
 let sheetsAccessToken = null;
 let importPreview = null; // { tab, rows: [{label, table, id, field, current, next, valid, reason, changed}] }
 
@@ -1394,11 +1405,17 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const currentRef = refRowData || {};
     Object.keys(REFERENCE_LABEL_TO_FIELD).forEach(label => {
       const field = REFERENCE_LABEL_TO_FIELD[label];
+      // still matched by label TEXT, never by row position (a tab's rows
+      // can shift order between houses) — this just widens which text
+      // counts as a match, for houses that word the same measurement
+      // differently (e.g. Coronado's "Rear Stoop" for what every other
+      // house tab calls "Rear Deck").
+      const acceptableLabels = [label, ...(REFERENCE_LABEL_ALIASES[label] || [])];
       let matchIdx = -1;
       for (let i = 0; i < refRows.length; i++) {
         const cellLabel = String((refRows[i][0] || '')).trim();
         if (!cellLabel) continue;
-        if (field === 'tile_sf' ? cellLabel.startsWith('SF of Tile') : cellLabel === label) { matchIdx = i; break; }
+        if (field === 'tile_sf' ? cellLabel.startsWith('SF of Tile') : acceptableLabels.includes(cellLabel)) { matchIdx = i; break; }
       }
       if (matchIdx === -1) { pushMissingRow(rows, label + ' (reference measurement)', 'reference_house_measurements', classified.house, currentRef[field] || 0, null); return; }
       const rawVal = (refRows[matchIdx][1] || '').toString();
