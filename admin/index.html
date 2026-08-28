@@ -1382,6 +1382,15 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const rateByItemId = {};
     (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
     const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
+    // TEMP DEBUG — remove once we've diagnosed why Coronado shows 0 changes.
+    // sheetRows = item name/qty/amount rows read from B3:E250 (item prices).
+    // refRows = area/count rows read from H1:J40 (Load Base Plan measurements).
+    // If either printed here is empty or looks wrong, the tab's real layout
+    // doesn't match these fixed column ranges — that's the actual bug, not
+    // wording.
+    console.log('[Keel][DEBUG] house =', classified.house, 'tab =', tabName);
+    console.log('[Keel][DEBUG] sheetRows (B3:E250, item prices) =', JSON.stringify(sheetRows));
+    console.log('[Keel][DEBUG] refRows (H1:J40, area/count measurements) =', JSON.stringify(refRows));
     tabInfo = { type: 'house', house: classified.house, sheetRows };
     (costItems || []).forEach(item => {
       const hr = rateByItemId[item.id];
