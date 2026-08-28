@@ -105,7 +105,7 @@
     <input class="formula-input" id="formula-bar-input" value="Keel EZ Estimate Master Cost Sheet" readonly />
   </div>
 
-  <div class="spreadsheet-container">
+  <div class="spreadsheet-container" id="sheet-grid-container">
     <table class="sheet-table">
       <thead>
         <tr>
@@ -124,6 +124,20 @@
     </table>
   </div>
 
+  <!-- TAKEOFF HISTORY — separate table, not the A-F sheet-grid, since
+       takeoff_data has ~22 columns of its own and doesn't fit that shape.
+       Hidden unless this tab is active (toggled in loadSheetData()). -->
+  <div class="spreadsheet-container" id="takeoff-history-container" style="display:none;">
+    <table class="sheet-table" style="table-layout:auto;">
+      <thead>
+        <tr id="takeoff-history-head"><!-- columns filled in by renderTakeoffHistory() --></tr>
+      </thead>
+      <tbody id="takeoff-history-body">
+        <!-- Rendered rows -->
+      </tbody>
+    </table>
+  </div>
+
   <!-- House tabs (2026 MASTER PLAN X) are rendered dynamically from the
        "houses" table by loadHouses() below — no hardcoded house list, so a
        new base plan just needs a row in that table, nothing edited here. -->
@@ -137,6 +151,7 @@
     <div class="tab-item" onclick="switchSheetTab('TEMPLATE', this)">TEMPLATE</div>
     <div class="tab-item" onclick="switchSheetTab('SALES VERSION', this)">SALES VERSION</div>
     <div class="tab-item" onclick="switchSheetTab('NOTIFICATIONS', this)">NOTIFICATIONS</div>
+    <div class="tab-item" onclick="switchSheetTab('TAKEOFF HISTORY', this)">TAKEOFF HISTORY</div>
   </div>
 </div>
 
@@ -357,6 +372,19 @@ function selectCell(cellRef, formulaOrVal) {
 }
 
 async function loadSheetData() {
+  // TAKEOFF HISTORY uses its own table (different shape, ~22 columns) —
+  // swap which container is visible, render, and skip the normal A-F grid.
+  const gridContainer    = document.getElementById('sheet-grid-container');
+  const historyContainer = document.getElementById('takeoff-history-container');
+  if (activeTab === 'TAKEOFF HISTORY') {
+    gridContainer.style.display = 'none';
+    historyContainer.style.display = '';
+    await renderTakeoffHistory();
+    return;
+  }
+  gridContainer.style.display = '';
+  historyContainer.style.display = 'none';
+
   const tbody = document.getElementById('sheet-grid-body');
   tbody.innerHTML = '';
 
@@ -827,6 +855,58 @@ async function loadSheetData() {
     `;
     tbody.appendChild(tr);
   }
+}
+
+// TAKEOFF HISTORY — one row per write to job_quantities, logged
+// automatically by the job_quantities_log_takeoff trigger in Supabase.
+// Read-only here on purpose: no pencil/edit buttons, this is a history
+// log, not an editable settings table like the tabs above.
+const TAKEOFF_HISTORY_COLS = [
+  { key: 'created_at',         label: 'Date',                fmt: v => new Date(v).toLocaleString() },
+  { key: 'basement_sf',        label: 'Basement SF' },
+  { key: 'floor1_sf',          label: '1st Floor SF' },
+  { key: 'floor2_sf',          label: '2nd Floor SF' },
+  { key: 'floor3_sf',          label: '3rd Floor SF' },
+  { key: 'attic_storage_sf',   label: 'Attic w/ Storage SF' },
+  { key: 'habitable_attic_sf', label: 'Habitable Attic SF' },
+  { key: 'front_porch_sf',     label: 'Front Porch SF' },
+  { key: 'rear_porch_sf',      label: 'Rear Porch SF' },
+  { key: 'rear_deck_sf',       label: 'Rear Deck SF' },
+  { key: 'garage_sf',          label: 'Garage SF' },
+  { key: 'exterior_doors',     label: 'Ext. Doors' },
+  { key: 'windows',            label: 'Windows' },
+  { key: 'baths',              label: 'Baths' },
+  { key: 'cabinets_lf',        label: 'Cabinets LF' },
+  { key: 'countertop_lf',      label: 'Countertop LF' },
+  { key: 'staircases',         label: 'Staircases' },
+  { key: 'porch_columns',      label: 'Porch Columns' },
+  { key: 'garage_doors',       label: 'Garage Doors' },
+  { key: 'interior_doors',     label: 'Int. Doors' },
+  { key: 'carpet_sf',          label: 'Carpet SF' },
+  { key: 'hardwood_sf',        label: 'Hardwood SF' },
+  { key: 'tile_sf',            label: 'Tile SF' }
+];
+
+async function renderTakeoffHistory() {
+  const head = document.getElementById('takeoff-history-head');
+  const tbody = document.getElementById('takeoff-history-body');
+  head.innerHTML = TAKEOFF_HISTORY_COLS.map(c => `<th>${c.label}</th>`).join('');
+  tbody.innerHTML = '';
+
+  const { data, error } = await sb.from('takeoff_data').select('*').order('created_at', { ascending: false });
+  if (error) {
+    tbody.innerHTML = `<tr><td colspan="${TAKEOFF_HISTORY_COLS.length}" style="color:#c00;">Error loading takeoff_data: ${error.message}</td></tr>`;
+    return;
+  }
+  if (!data || !data.length) {
+    tbody.innerHTML = `<tr><td colspan="${TAKEOFF_HISTORY_COLS.length}" style="color:#5f6368;">No takeoff history yet — this fills in automatically the next time Guided Takeoff or Write to Sheet runs.</td></tr>`;
+    return;
+  }
+  data.forEach(row => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = TAKEOFF_HISTORY_COLS.map(c => `<td>${c.fmt ? c.fmt(row[c.key]) : (row[c.key] ?? 0)}</td>`).join('');
+    tbody.appendChild(tr);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
