@@ -676,6 +676,15 @@ async function loadSheetData() {
     } catch (e) {
       console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
     }
+  } else if (matchedHouse) {
+    // House tabs (Kiawah, Coronado, etc.) have their own BUILDING AREA/
+    // QUANTITIES block too — this used to always render blank here
+    // regardless of house, even after Import from Sheet correctly filled
+    // in reference_house_measurements for that house. Same field names
+    // (basement_sf, floor1_sf, ... tile_sf) as job_quantities, so no
+    // offset-mapping needed — just read the row straight from Supabase.
+    const { data: refRow } = await sb.from('reference_house_measurements').select('*').eq('house', currentHouse).maybeSingle();
+    jq = refRow || {};
   }
   const TOTAL_AREA_FIELDS = ['basement_sf', 'floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf'];
   function totalAreaSum(j) { return TOTAL_AREA_FIELDS.reduce((sum, f) => sum + (Number(j[f]) || 0), 0); }
@@ -697,7 +706,11 @@ async function loadSheetData() {
     return total;
   }
   function hijCellsFor(rowNum) {
-    if (!(activeTab === '2026 CUSTOM PLAN')) return '<td></td><td></td><td></td><td></td>';
+    // Blank only when there's genuinely nothing to show (a tab that isn't
+    // Custom Plan or a matched house tab at all, e.g. SITE OPTIONS) — not
+    // "any tab except Custom Plan" like before, which is what made every
+    // house tab always render these 4 columns blank regardless of house.
+    if (!(activeTab === '2026 CUSTOM PLAN') && !matchedHouse) return '<td></td><td></td><td></td><td></td>';
     if (rowNum >= 3 && rowNum <= 12) {
       const label = AREA_LABELS[rowNum - 3];
       const val = jq[ADMIN_ROW_TO_FIELD[rowNum]] || 0;
