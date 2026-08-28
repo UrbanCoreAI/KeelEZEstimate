@@ -1401,7 +1401,10 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
         { headers: { Authorization: 'Bearer ' + token } }
       );
       const ivBody = await ivRes.json();
+      // TEMP DEBUG — remove once formula solving is confirmed working.
+      if (!ivRes.ok) console.warn('[Keel][DEBUG] I-column fetch failed for ' + tabName + ':', JSON.stringify(ivBody));
       if (ivRes.ok) iColVals = ivBody.values || [];
+      console.log('[Keel][DEBUG] iColVals for ' + tabName + ' =', JSON.stringify(iColVals));
     } catch (e) { console.warn('[Keel] could not read I-column values for ' + tabName + ':', e.message); }
 
     // Solves a "=I4+I5"-style formula using iColVals above. Row 13 is the
@@ -1435,6 +1438,8 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const amtCell = (sheetRows[rowIdx][3] || '').toString();
       const amtSolved = evalHouseFormula(amtCell);
       const sheetAmtRaw = amtSolved !== null ? String(amtSolved) : amtCell;
+      // TEMP DEBUG — remove once formula solving is confirmed working.
+      console.log('[Keel][DEBUG]', item.item_name, '| cell D/E raw:', amtCell, '| solved:', amtSolved, '| currently in Supabase (hr.amount):', hr ? hr.amount : '(no row yet)');
       if (!hr) {
         // Brand-new house — no house_rates row exists yet for this item at
         // all (same situation Sullivan/Bonaire/Catalina were in before
