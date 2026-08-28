@@ -1385,10 +1385,24 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     tabInfo = { type: 'house', house: classified.house, sheetRows };
     (costItems || []).forEach(item => {
       const hr = rateByItemId[item.id];
-      if (!hr) return; // no house_rates row for this house/item yet — nothing to import into
       const rowIdx = findRowByName(sheetRows, item.item_name);
-      if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr.id, hr.amount, null, sheetRows.map(r => r[0]), item.id); return; }
+      if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr ? hr.id : null, hr ? hr.amount : 0, null, sheetRows.map(r => r[0]), item.id); return; }
       const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
+      if (!hr) {
+        // Brand-new house — no house_rates row exists yet for this item at
+        // all (same situation Sullivan/Bonaire/Catalina were in before
+        // being manually seeded). id stays null on purpose: confirmImport
+        // uses that to INSERT a new row instead of updating one, reading
+        // quantity straight from the Sheet's own D column since there's
+        // no existing quantity to preserve.
+        const sheetQtyRaw = (sheetRows[rowIdx][2] || '').toString();
+        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'E' + (rowIdx + 3));
+        const pushed = rows[rows.length - 1];
+        pushed.costItemId = item.id;
+        pushed.house = classified.house;
+        pushed.newQuantity = Number(sheetQtyRaw) || 0;
+        return;
+      }
       pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
     });
 
@@ -1701,7 +1715,22 @@ async function confirmImport() {
     }
   }
 
-  for (const r of otherRows) {
+  // house_rates rows with id === null were flagged by buildRowsForTab as
+  // "no row exists yet for this house/item" (a brand-new house) — those
+  // need an INSERT (with the cost_item_id/house/quantity that come along
+  // with it), never an .update().eq('id', ...) against a row that isn't
+  // there.
+  const newHouseRateRows = otherRows.filter(r => r.table === 'house_rates' && r.id === null);
+  const updateRows = otherRows.filter(r => !(r.table === 'house_rates' && r.id === null));
+
+  for (const r of newHouseRateRows) {
+    const { error } = await sb.from('house_rates').insert({
+      cost_item_id: r.costItemId, house: r.house, amount: Number(r.next) || 0, quantity: r.newQuantity || 0
+    });
+    results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported (new rate): ' + r.label));
+  }
+
+  for (const r of updateRows) {
     const value = r.numeric ? (Number(r.next) || 0) : r.next;
     const { error } = await sb.from(r.table).update({ [r.field]: value }).eq('id', r.id);
     results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported: ' + r.label));
