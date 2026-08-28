@@ -1382,21 +1382,59 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const rateByItemId = {};
     (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
     const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
-    // TEMP DEBUG — remove once we've diagnosed why Coronado shows 0 changes.
-    // sheetRows = item name/qty/amount rows read from B3:E250 (item prices).
-    // refRows = area/count rows read from H1:J40 (Load Base Plan measurements).
-    // If either printed here is empty or looks wrong, the tab's real layout
-    // doesn't match these fixed column ranges — that's the actual bug, not
-    // wording.
-    console.log('[Keel][DEBUG] house =', classified.house, 'tab =', tabName);
-    console.log('[Keel][DEBUG] sheetRows (B3:E250, item prices) =', JSON.stringify(sheetRows));
-    console.log('[Keel][DEBUG] refRows (H1:J40, area/count measurements) =', JSON.stringify(refRows));
     tabInfo = { type: 'house', house: classified.house, sheetRows };
+
+    // Some house tabs (Coronado) write Quantity (D) / Amount (E) as live
+    // formulas referencing this same tab's own I-column area/count block
+    // (e.g. "=I4+I5"), instead of a plain typed-in number like the older
+    // houses use. sheetRows above was fetched in FORMULA render mode, so
+    // for those cells it holds the literal formula TEXT, not the answer —
+    // and a formula string can't go into house_rates' numeric columns.
+    // This reads the tab's I-column as actual computed numbers
+    // (UNFORMATTED_VALUE, same fix the Custom Plan tab view already uses
+    // a few hundred lines up, for the exact same reason) so any formula
+    // found in D/E can be solved before writing it anywhere.
+    let iColVals = [];
+    try {
+      const ivRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent("'" + tabName + "'!I1:I40")}?valueRenderOption=UNFORMATTED_VALUE`,
+        { headers: { Authorization: 'Bearer ' + token } }
+      );
+      const ivBody = await ivRes.json();
+      if (ivRes.ok) iColVals = ivBody.values || [];
+    } catch (e) { console.warn('[Keel] could not read I-column values for ' + tabName + ':', e.message); }
+
+    // Solves a "=I4+I5"-style formula using iColVals above. Row 13 is the
+    // BUILDING AREA section's own running total (=SUM(I3:I12) on the
+    // Sheet), so it's summed the same way here rather than read directly.
+    // Returns null (not 0) for anything that isn't actually a formula, so
+    // callers can tell "solved a formula" apart from "this was already a
+    // plain number" and leave plain numbers untouched.
+    function evalHouseFormula(formula) {
+      const f = (formula || '').trim();
+      if (!f.startsWith('=')) return null;
+      const body = f.slice(1);
+      const re = /\$?I\$?(\d+)/g;
+      let total = 0, m, matched = false;
+      while ((m = re.exec(body)) !== null) {
+        matched = true;
+        const rowN = parseInt(m[1], 10);
+        if (rowN === 13) {
+          for (let r = 3; r <= 12; r++) total += Number((iColVals[r - 1] && iColVals[r - 1][0]) || 0);
+        } else {
+          total += Number((iColVals[rowN - 1] && iColVals[rowN - 1][0]) || 0);
+        }
+      }
+      return matched ? total : null;
+    }
+
     (costItems || []).forEach(item => {
       const hr = rateByItemId[item.id];
       const rowIdx = findRowByName(sheetRows, item.item_name);
       if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr ? hr.id : null, hr ? hr.amount : 0, null, sheetRows.map(r => r[0]), item.id); return; }
-      const sheetAmtRaw = (sheetRows[rowIdx][3] || '').toString();
+      const amtCell = (sheetRows[rowIdx][3] || '').toString();
+      const amtSolved = evalHouseFormula(amtCell);
+      const sheetAmtRaw = amtSolved !== null ? String(amtSolved) : amtCell;
       if (!hr) {
         // Brand-new house — no house_rates row exists yet for this item at
         // all (same situation Sullivan/Bonaire/Catalina were in before
@@ -1404,7 +1442,9 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
         // uses that to INSERT a new row instead of updating one, reading
         // quantity straight from the Sheet's own D column since there's
         // no existing quantity to preserve.
-        const sheetQtyRaw = (sheetRows[rowIdx][2] || '').toString();
+        const qtyCell = (sheetRows[rowIdx][2] || '').toString();
+        const qtySolved = evalHouseFormula(qtyCell);
+        const sheetQtyRaw = qtySolved !== null ? String(qtySolved) : qtyCell;
         pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'E' + (rowIdx + 3));
         const pushed = rows[rows.length - 1];
         pushed.costItemId = item.id;
