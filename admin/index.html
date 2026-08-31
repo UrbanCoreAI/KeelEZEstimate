@@ -1538,18 +1538,56 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   // Shared by the 'custom' and 'house' branches below — an item is one of
   // the 9 "Total ..." Base House Pricing rows (see
   // supabase-migrations/12_total_house_pricing_items.sql) if its
-  // quantity_formula is the sentinel 'sheet_total_row'. These only exist
-  // on HOUSE tabs (each house's own BuilderTrend breakout) — the Custom
-  // Plan tab has no such rows at all, so it must skip them too, exactly
-  // like the house branch does, or they show up as "not found" there.
+  // quantity_formula is the sentinel 'sheet_total_row'. These exist on
+  // EVERY tab (every house AND the Custom Plan tab) with the exact same
+  // label text everywhere — confirmed by dumping the raw Sheet — but that
+  // label text is NOT the same as our own DB item_name (e.g. the DB says
+  // "Total Finished SF" while the Sheet actually says "TOTAL FOR FINISHED
+  // AREAS"), so matching against item_name directly silently fails for 7
+  // of these 9 and falls back to the wrong row. This maps each DB name to
+  // its real, verified-identical-on-every-tab Sheet label, used instead
+  // of item_name whenever locating one of these rows in the Sheet.
   function isTotalRowItem(item) { return item.quantity_formula === 'sheet_total_row'; }
+  const TOTAL_ROW_SHEET_LABELS = {
+    'Total Fixed Cost': 'TOTAL FIXED COST',
+    'Total Finished SF & Unfinished (Under Roof)': 'TOTAL FOR ALL FINISHED & UNFINISHED AREAS (UNDER ROOF)',
+    'Total Finished SF & Unfinished SF (Under Roof Excluding Porches)': 'TOTAL FOR ALL FINISHED & UNFINISHED AREAS (UNDER ROOF EXCLUDING PORCHES)',
+    'Total Finished SF': 'TOTAL FOR FINISHED AREAS',
+    'Total 1st Floor, Garage & Porch SF': 'TOTAL FOR 1ST FLOOR, GARAGE & PORCHES',
+    'Total 1st Floor Finished, 1st Floor Unfinished & Garage': 'TOTAL FOR 1ST FLOOR FINISHED, 1ST FLOOR UNFINISHED & GARAGE',
+    'Total Finished 1st Floor SF': 'TOTAL FOR 1ST FLOOR ONLY',
+    'Total Garage SF': 'TOTAL FOR GARAGE',
+    'Total for Decks & Porches': 'TOTAL FOR DECKS & PORCHES'
+  };
 
   if (classified.type === 'custom') {
     const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
     const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${CUSTOM_TAB}'!B3:F250`]);
     tabInfo = { type: 'custom', sheetRows };
+    // Column A on the Custom Plan tab holds the 9 Total items' names (the
+    // A:D merge's top-left cell) -- outside the B:F range fetched above,
+    // same reason the house branch needs its own column-A fetch. Values
+    // (not formulas) are fine here since it's just label text, never a
+    // formula.
+    let customTotalLabels = [];
+    try {
+      const claRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent("'" + CUSTOM_TAB + "'!A1:A250")}?valueRenderOption=UNFORMATTED_VALUE`,
+        { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } }
+      );
+      const claBody = await claRes.json();
+      if (claRes.ok) customTotalLabels = claBody.values || [];
+    } catch (e) { console.warn('[Keel] could not read column A for ' + CUSTOM_TAB + ':', e.message); }
+    function findCustomPlanRowByLabel(label) {
+      const target = (label || '').trim().toLowerCase();
+      for (let i = 0; i < customTotalLabels.length; i++) {
+        const cellA = String((customTotalLabels[i] && customTotalLabels[i][0]) || '').trim().toLowerCase();
+        if (cellA && cellA === target) return i + 1;
+      }
+      return null;
+    }
     (costItems || []).forEach(item => {
-      if (isTotalRowItem(item)) return; // house-tab-only rows — Custom Plan has no such rows to match
+      if (isTotalRowItem(item)) return; // handled separately below (different row layout + label matching)
       const rowIdx = findRowByName(sheetRows, item.item_name);
       if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null, sheetRows.map(r => r[0])); return; }
       const rowNum = rowIdx + 3;
@@ -1560,6 +1598,39 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       // tab — it only ever gets a real value in Supabase, never in the
       // Sheet — so it's never read, compared, or flagged here.
       pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'F' + rowNum);
+    });
+
+    // The 9 "Total ..." items on the Custom Plan tab: same label-matching
+    // as the house branch below, but the values here are FORMULA TEXT
+    // (this tab always stores formulas, never resolved numbers — see
+    // every other item above). Confirmed from a raw dump of the Sheet:
+    // Amount (E) is always blank/0 for every individual Custom Plan item,
+    // so the Total rows' own E column is a SUM of blanks and meaningless
+    // here — only Unit Cost (F, or E for the fixed-cost row, matching the
+    // house branch's E-before-F convention) carries a real formula.
+    // Quantity (D) is read from the row directly above, same convention
+    // as the house branch — every item feeding into one Total shares that
+    // same area/quantity formula, so the one directly above is always
+    // representative.
+    (costItems || []).filter(isTotalRowItem).forEach(item => {
+      const sheetLabel = TOTAL_ROW_SHEET_LABELS[item.item_name];
+      if (!sheetLabel) { console.warn('[Keel] no Sheet-label mapping for "' + item.item_name + '" — cannot locate it on ' + CUSTOM_TAB); return; }
+      const nameRow = findCustomPlanRowByLabel(sheetLabel);
+      if (!nameRow) { console.warn('[Keel] "' + sheetLabel + '" not found on ' + CUSTOM_TAB); return; }
+      const rowIdx = nameRow - 3; // sheetRows[0] = row 3 (B3:F250)
+      const rowVals = sheetRows[rowIdx] || [];
+      if (item.is_fixed) {
+        const sheetUnit = (rowVals[3] || '').toString(); // E (value lives here for the fixed-cost row, F is blank)
+        console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', E=' + JSON.stringify(sheetUnit));
+        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'E' + nameRow);
+      } else {
+        const qtyRowVals = sheetRows[rowIdx - 1] || [];
+        const sheetQty = (qtyRowVals[2] || '').toString(); // D, row directly above
+        const sheetUnit = (rowVals[4] || '').toString(); // F, name row
+        console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', D(above)=' + JSON.stringify(sheetQty) + ', F=' + JSON.stringify(sheetUnit));
+        pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, { valid: true }, false, 'D' + (nameRow - 1));
+        pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'F' + nameRow);
+      }
     });
 
     // job_quantities sync — the Custom Plan tab's own I-column (BUILDING
@@ -1740,10 +1811,11 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // cost_code (set by the migration to match its real Sheet row); the
     // quantity row is always exactly one row above.
     (costItems || []).filter(isTotalRowItem).forEach(item => {
-      const foundRow = findTotalRowByName(item.item_name);
+      const sheetLabel = TOTAL_ROW_SHEET_LABELS[item.item_name] || item.item_name;
+      const foundRow = findTotalRowByName(sheetLabel);
       const nameRow = foundRow || Number(item.cost_code) || 0;
-      if (!nameRow) { console.warn('[Keel] "' + item.item_name + '" has no cost_code set and wasn\'t found by name in ' + tabName + ' — run the latest supabase-migrations/12_total_house_pricing_items.sql first'); return; }
-      if (!foundRow) console.warn('[Keel] "' + item.item_name + '" not found by name in ' + tabName + ' — falling back to cost_code row ' + nameRow + ', which may be wrong for this tab');
+      if (!nameRow) { console.warn('[Keel] "' + sheetLabel + '" has no cost_code set and wasn\'t found by name in ' + tabName + ' — run the latest supabase-migrations/12_total_house_pricing_items.sql first'); return; }
+      if (!foundRow) console.warn('[Keel] "' + sheetLabel + '" not found by name in ' + tabName + ' — falling back to cost_code row ' + nameRow + ', which may be wrong for this tab');
       const hr = rateByItemId[item.id];
       let qtyRaw = 0, unitRaw = 0;
       if (item.is_fixed) {
