@@ -899,7 +899,20 @@ async function loadSheetData() {
 
     if (activeTab === '2026 CUSTOM PLAN') {
       unitCost = unitCostFromFormula(r.unit_cost_formula);
-      qtyVal = evaluateQuantityFormula(r.quantity_formula, jq);
+      // A Fixed Cost item (is_fixed) is a lump sum by definition -- the
+      // Sheet itself has no real quantity for these (blank D column on
+      // "TOTAL FIXED COST", and every regular Fixed Cost line just uses a
+      // literal 1) -- so always treat quantity as 1 rather than trusting
+      // whatever text sits in quantity_formula. This matters most for
+      // "Total Fixed Cost": that field was seeded by the original SQL
+      // migration with the non-numeric placeholder "sheet_total_row"
+      // (since import never had a real D value to write there), which
+      // evaluateQuantityFormula turns into 0 -- silently zeroing Amount
+      // even once Unit Cost is correct. Mirrors the house-tab import
+      // logic, which already skips multiplying by quantity for is_fixed
+      // items (see buildRowsForTab's "amountRaw = item.is_fixed ? unitRaw
+      // : (qtyRaw * unitRaw)").
+      qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
       amtVal = unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
