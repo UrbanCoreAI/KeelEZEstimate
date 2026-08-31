@@ -990,6 +990,23 @@ const CUSTOM_TAB = '2026 CUSTOM PLAN';
 const JQ_AREA_FIELD_BY_OFFSET = { 0: 'basement_sf', 1: 'floor1_sf', 2: 'floor2_sf', 3: 'floor3_sf', 4: 'attic_storage_sf', 5: 'habitable_attic_sf', 6: 'front_porch_sf', 7: 'rear_porch_sf', 8: 'rear_deck_sf', 9: 'garage_sf' };
 const JQ_QTY_FIELD_BY_OFFSET = { 0: 'exterior_doors', 1: 'windows', 2: 'baths', 3: 'cabinets_lf', 4: 'countertop_lf', 5: 'staircases', 6: 'porch_columns', 7: 'garage_doors', 8: 'interior_doors', 9: 'carpet_sf', 10: 'hardwood_sf', 11: 'tile_sf' };
 
+// Reverse of the two maps above (field name -> real Sheet row number) plus
+// a merged row->field map — used by the Import Preview's spreadsheet-style
+// grid to place a diff on the right cell and to render the H/I/J block
+// there the same way loadSheetData's hijCellsFor does.
+const JQ_FIELD_TO_ROW = {};
+const ADMIN_ROW_TO_FIELD_PREVIEW = {};
+Object.keys(JQ_AREA_FIELD_BY_OFFSET).forEach(off => {
+  const row = Number(off) + 3;
+  JQ_FIELD_TO_ROW[JQ_AREA_FIELD_BY_OFFSET[off]] = row;
+  ADMIN_ROW_TO_FIELD_PREVIEW[row] = JQ_AREA_FIELD_BY_OFFSET[off];
+});
+Object.keys(JQ_QTY_FIELD_BY_OFFSET).forEach(off => {
+  const row = Number(off) + 18;
+  JQ_FIELD_TO_ROW[JQ_QTY_FIELD_BY_OFFSET[off]] = row;
+  ADMIN_ROW_TO_FIELD_PREVIEW[row] = JQ_QTY_FIELD_BY_OFFSET[off];
+});
+
 // Reads the Custom Plan tab's own I-column area/count block as actual
 // computed numbers (UNFORMATTED_VALUE — I3 and I13 are live Sheet formulas,
 // so the shared sheetsGet()'s FORMULA render mode would return formula text
@@ -1398,7 +1415,8 @@ async function loadCombinedImportPreview() {
       rows = rows.concat(tabRows);
       if (tabInfo) tabDataByTab[tabName] = tabInfo;
     }
-    importPreview = { rows, skippedUnknown, detectedNewBasePlans, tabDataByTab };
+    rows.forEach((r, i) => { r._idx = i; }); // stable key for the preview grid's yellow/green toggle
+    importPreview = { rows, skippedUnknown, detectedNewBasePlans, tabDataByTab, revertedKeys: new Set() };
     renderImportPreview();
   } catch (e) {
     body.innerHTML = '<p style="color:#d93025;">Error loading selected tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
@@ -1425,6 +1443,8 @@ async function confirmNewBasePlan(tabName) {
   const token = await getSheetsAccessToken();
   const { rows: tabRows, tabInfo } = await buildRowsForTab(token, selectedSpreadsheetId, tabName, classified);
   tabRows.forEach(r => { r.tab = tabName; });
+  const startIdx = importPreview.rows.length;
+  tabRows.forEach((r, i) => { r._idx = startIdx + i; });
   importPreview.rows = importPreview.rows.concat(tabRows);
   if (tabInfo) importPreview.tabDataByTab[tabName] = tabInfo;
   importPreview.detectedNewBasePlans = importPreview.detectedNewBasePlans.filter(d => d.tabName !== tabName);
@@ -1471,8 +1491,15 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const jqCurrent = currentJq || {};
     [...Object.values(JQ_AREA_FIELD_BY_OFFSET), ...Object.values(JQ_QTY_FIELD_BY_OFFSET)].forEach(field => {
       const sheetVal = String(sheetJq[field] ?? 0);
-      pushRowIfChanged(rows, field + ' (job quantities)', 'job_quantities', 1, field, jqCurrent[field] || 0, sheetVal, validateNumericCell(sheetVal, jqCurrent[field] || 0), true, null);
+      pushRowIfChanged(rows, field + ' (job quantities)', 'job_quantities', 1, field, jqCurrent[field] || 0, sheetVal, validateNumericCell(sheetVal, jqCurrent[field] || 0), true, 'I' + JQ_FIELD_TO_ROW[field]);
     });
+    // Preview grid needs the full cost_items+house_rates baseline and the
+    // job_quantities row it just read, so the spreadsheet-style Import
+    // Preview can render every row (not just the changed ones) with the
+    // Sheet's new values overlaid only on the cells that actually changed.
+    const { data: customGridItems } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
+    tabInfo.gridItems = customGridItems;
+    tabInfo.jq = jqCurrent;
   } else if (classified.type === 'house') {
     // cost_code/is_fixed/quantity_formula are needed for the 9 "Total ..."
     // items below — cost_code doubles as the real Sheet row number (same
@@ -1487,6 +1514,10 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     (houseRates || []).forEach(hr => { rateByItemId[hr.cost_item_id] = hr; });
     const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
     tabInfo = { type: 'house', house: classified.house, sheetRows };
+    // Same baseline fetch as the custom-tab branch above — powers the
+    // spreadsheet-style Import Preview grid (see buildImportGridHtml).
+    const { data: houseGridItems } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
+    tabInfo.gridItems = houseGridItems;
 
     // "Total ..." line items (Base House Pricing section) are laid out
     // differently from every other cost item: name (merged A:D) + unit
@@ -1643,6 +1674,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // and seeded fresh via upsert in confirmImport.
     const { data: refRowData } = await sb.from('reference_house_measurements').select('*').eq('house', classified.house).maybeSingle();
     const currentRef = refRowData || {};
+    tabInfo.jq = currentRef;
     Object.keys(REFERENCE_LABEL_TO_FIELD).forEach(label => {
       const field = REFERENCE_LABEL_TO_FIELD[label];
       // still matched by label TEXT, never by row position (a tab's rows
@@ -1691,6 +1723,116 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   }
 
   return { rows, tabInfo };
+}
+
+// Spreadsheet-style Import Preview — a diff cell (one that changed and
+// will actually be written) renders yellow showing the Sheet's new value.
+// Clicking it "flips it back": shows what's currently in the database
+// instead, turns green, and that cell is left out of Confirm Import.
+// Clicking a green cell flips it forward again. Rows/cells with no diff
+// just show the current database value, unstyled, same as the live grid.
+function isRowReverted(r) {
+  return !!(importPreview && importPreview.revertedKeys && importPreview.revertedKeys.has(r._idx));
+}
+function toggleImportCell(idx) {
+  if (!importPreview.revertedKeys) importPreview.revertedKeys = new Set();
+  if (importPreview.revertedKeys.has(idx)) importPreview.revertedKeys.delete(idx);
+  else importPreview.revertedKeys.add(idx);
+  renderImportPreview();
+}
+function importCellHtml(diffRow) {
+  if (!diffRow) return '';
+  const reverted = isRowReverted(diffRow);
+  const showVal = reverted ? diffRow.current : diffRow.next;
+  const bg = reverted ? '#ceead6' : '#fff2b2';
+  const title = reverted
+    ? 'Currently in the database — click to import the Sheet\'s new value instead'
+    : 'Sheet\'s new value — click to keep the current database value (won\'t be imported)';
+  return `<span onclick="toggleImportCell(${diffRow._idx})" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${showVal}</span>`;
+}
+const AREA_LABELS_PREVIEW = ['Basement', '1st Floor', '2nd Floor', '3rd Floor', 'Attic with Storage', 'Habitable Attic', 'Front Porch', 'Rear Porch', 'Rear Deck', 'Garage'];
+const QTY_LABELS_PREVIEW = ['# of Exterior Doors', '# of Windows', '# of Baths', 'LF of Cabinets', 'LF of Countertop', '# of Staircases', '# of Front Porch Columns', '# of Garage Doors', '# of Interior Doors', 'SF of Carpet', 'SF of Hardwood', 'SF of Tile'];
+
+// Renders one tab's full B-J grid, styled like the live sheet view
+// (loadSheetData) — every row from the lowest to highest cost_code, real
+// values everywhere, yellow/green only on cells this import actually
+// touches. Only used for 'house' and 'custom' tabs (the two with a real
+// cost_code-driven row layout); site/additional tabs keep the older flat
+// change list below.
+function buildImportGridHtml(tabName) {
+  const tabInfo = importPreview.tabDataByTab[tabName];
+  if (!tabInfo || !tabInfo.gridItems || !tabInfo.gridItems.length) return '';
+  const gridItems = tabInfo.gridItems;
+  const jq = tabInfo.jq || {};
+  const isCustom = tabInfo.type === 'custom';
+  const houseKey = tabInfo.house;
+
+  const cellDiffByRef = {};
+  importPreview.rows.forEach(r => {
+    if (r.tab !== tabName || !r.cellRef) return;
+    if (!(r.changed && (r.valid || !skipFormatIssues))) return; // same condition confirmImport() writes on
+    cellDiffByRef[r.cellRef] = r;
+  });
+
+  const itemByRow = {};
+  gridItems.forEach(it => { if (it.cost_code !== null && it.cost_code !== undefined && it.cost_code !== '') itemByRow[Number(it.cost_code)] = it; });
+  const rowNums = Object.keys(itemByRow).map(Number);
+  if (!rowNums.length) return '';
+  const minRow = Math.min(...rowNums);
+  const maxRow = Math.max(...rowNums);
+
+  function hijPreviewCells(rowNum) {
+    const diff = cellDiffByRef['I' + rowNum];
+    const field = ADMIN_ROW_TO_FIELD_PREVIEW[rowNum];
+    if (rowNum >= 3 && rowNum <= 12) {
+      return `<td></td><td>${AREA_LABELS_PREVIEW[rowNum - 3]}</td><td>${diff ? importCellHtml(diff) : (jq[field] || 0)}</td><td>SF</td>`;
+    }
+    if (rowNum >= 18 && rowNum <= 29) {
+      return `<td></td><td>${QTY_LABELS_PREVIEW[rowNum - 18]}</td><td>${diff ? importCellHtml(diff) : (jq[field] || 0)}</td><td>EA</td>`;
+    }
+    return '<td></td><td></td><td></td><td></td>';
+  }
+
+  let currentSection = '';
+  let html = `<div style="margin:14px 0 6px;font-weight:bold;color:#1a73e8;">${tabName}</div>` +
+    '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+    '<tr style="background:#f1f3f4;font-weight:bold;text-align:left;">' +
+    '<td style="padding:4px;">#</td><td style="padding:4px;">Item</td><td style="padding:4px;">Calc Basis</td>' +
+    '<td style="padding:4px;">Quantity</td><td style="padding:4px;">Amount</td><td style="padding:4px;">Unit Cost</td>' +
+    '<td></td><td>Location</td><td>Area/Qty</td><td>Unit</td></tr>';
+
+  for (let rowNum = minRow; rowNum <= maxRow; rowNum++) {
+    const it = itemByRow[rowNum];
+    const dDiff = cellDiffByRef['D' + rowNum];
+    const fDiff = cellDiffByRef['F' + rowNum];
+    if (!it) {
+      html += `<tr><td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td>` +
+        `<td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td>` +
+        `<td>${dDiff ? importCellHtml(dDiff) : ''}</td><td></td><td>${fDiff ? importCellHtml(fDiff) : ''}</td><td></td>` +
+        `${hijPreviewCells(rowNum)}</tr>`;
+      continue;
+    }
+    if (it.section !== currentSection) {
+      currentSection = it.section;
+      html += `<tr style="background:#e6f4ea;"><td></td><td colspan="9" style="padding:4px;font-weight:bold;">${(currentSection || '').toUpperCase()}</td></tr>`;
+    }
+    const houseRate = isCustom ? null : (it.house_rates || []).find(h => h.house === houseKey);
+    const baseQty = isCustom ? (it.quantity_formula || '') : (houseRate ? houseRate.quantity : 0);
+    const baseAmt = isCustom ? null : (houseRate ? houseRate.amount : 0);
+    const baseUnit = isCustom ? (it.unit_cost_formula || '') : (houseRate && houseRate.quantity > 0 ? (houseRate.amount / houseRate.quantity).toFixed(2) : (houseRate ? houseRate.amount : 0));
+    const eDiff = cellDiffByRef['E' + rowNum];
+    html += `<tr>` +
+      `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td>` +
+      `<td><strong>${it.item_name}</strong></td>` +
+      `<td>${it.calc_basis || ''}</td>` +
+      `<td>${dDiff ? importCellHtml(dDiff) : baseQty}</td>` +
+      `<td>${eDiff ? importCellHtml(eDiff) : (baseAmt !== null ? '$' + Number(baseAmt).toFixed(2) : '')}</td>` +
+      `<td>${fDiff ? importCellHtml(fDiff) : (baseUnit !== '' && baseUnit !== null ? (isCustom ? baseUnit : '$' + baseUnit) : '')}</td>` +
+      `<td></td>${hijPreviewCells(rowNum)}` +
+      `</tr>`;
+  }
+  html += '</table>';
+  return html;
 }
 
 function renderImportPreview() {
@@ -1772,17 +1914,35 @@ function renderImportPreview() {
       '</div></div>';
   }
 
-  html += `<p><strong>${tabCount} tab(s)</strong> — ${importable.length} change(s) ready to import` + (writableIssues.length ? (skipFormatIssues ? `, ${writableIssues.length} skipped (see above)` : `, including ${writableIssues.length} overridden (see above)`) : '') + `:</p>`;
+  const revertedCount = importable.filter(isRowReverted).length;
+  const willImportCount = importable.length - revertedCount;
+  html += `<p><strong>${tabCount} tab(s)</strong> — ${willImportCount} change(s) ready to import` +
+    (revertedCount ? `, ${revertedCount} reverted to current (click a green cell to bring it back)` : '') +
+    (writableIssues.length ? (skipFormatIssues ? `, ${writableIssues.length} skipped (see above)` : `, including ${writableIssues.length} overridden (see above)`) : '') + `:</p>`;
   if (!changed.length) {
     html += '<p>Nothing has changed — Supabase already matches the selected tab(s).</p>';
   } else if (importable.length) {
-    html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
-      '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Tab</th><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
-      importable.map(r => `<tr style="border-bottom:1px solid #f1f3f4;">` +
-        `<td style="padding:4px;color:#5f6368;">${r.tab}</td>` +
-        `<td style="padding:4px;">${r.label}</td>` +
-        `<td style="padding:4px;">${r.current}</td><td style="padding:4px;">${r.next}</td></tr>`).join('') +
-      '</table>';
+    html += '<p style="color:#5f6368;">Yellow = will be imported. Click a cell to toggle it — green means keep what\'s currently in the database.</p>';
+    // Grid-shaped tabs (house/custom) get the spreadsheet-style view;
+    // anything else (site options, additional pricing) falls back to the
+    // older flat change list, since those aren't cost_code-driven grids.
+    const gridTabNames = new Set();
+    const flatRows = [];
+    importable.forEach(r => {
+      const ti = importPreview.tabDataByTab[r.tab];
+      if (ti && (ti.type === 'house' || ti.type === 'custom') && r.cellRef && ti.gridItems && ti.gridItems.length) gridTabNames.add(r.tab);
+      else flatRows.push(r);
+    });
+    gridTabNames.forEach(t => { html += buildImportGridHtml(t); });
+    if (flatRows.length) {
+      html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+        '<tr style="text-align:left;border-bottom:1px solid #dadce0;"><th style="padding:4px;">Tab</th><th style="padding:4px;">Item</th><th style="padding:4px;">Current</th><th style="padding:4px;">Sheet (new)</th></tr>' +
+        flatRows.map(r => `<tr style="border-bottom:1px solid #f1f3f4;">` +
+          `<td style="padding:4px;color:#5f6368;">${r.tab}</td>` +
+          `<td style="padding:4px;">${r.label}</td>` +
+          `<td style="padding:4px;">${r.current}</td><td style="padding:4px;">${r.next}</td></tr>`).join('') +
+        '</table>';
+    }
   }
   body.innerHTML = html;
   // Also shown with zero "ready to import" changes if there's at least
@@ -1867,7 +2027,7 @@ async function confirmImport() {
   // Format-drift cells are written anyway by default (Sheet wins), same
   // as the preview — r.field !== null excludes "not found" rows, which
   // have nothing to write regardless of this toggle.
-  const importable = importPreview.rows.filter(r => r.changed && (r.valid || (!skipFormatIssues && r.field !== null)));
+  const importable = importPreview.rows.filter(r => r.changed && (r.valid || (!skipFormatIssues && r.field !== null)) && !isRowReverted(r));
   const results = [];
 
   // "Replace row" confirmations for not-found items — read straight from
