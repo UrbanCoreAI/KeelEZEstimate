@@ -1760,14 +1760,14 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
         ' rawF(nameRow)=' + JSON.stringify(totalCell(nameRow, 5)) + ' => qtyRaw=' + qtyRaw + ' unitRaw=' + unitRaw + ' amountRaw=' + amountRaw +
         ' | existing house_rates row? ' + (hr ? ('yes (amount=' + hr.amount + ', quantity=' + hr.quantity + ')') : 'no'));
       if (!hr) {
-        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'F' + nameRow);
+        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'E' + nameRow);
         const pushed = rows[rows.length - 1];
         pushed.costItemId = item.id;
         pushed.house = classified.house;
         pushed.newQuantity = qtyRaw;
         return;
       }
-      pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'F' + nameRow);
+      pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + nameRow);
       if (!item.is_fixed) {
         pushRowIfChanged(rows, item.item_name + ' — Quantity', 'house_rates', hr.id, 'quantity', hr.quantity, sheetQtyRaw, validateNumericCell(sheetQtyRaw, hr.quantity), true, 'D' + (nameRow - 1));
       }
