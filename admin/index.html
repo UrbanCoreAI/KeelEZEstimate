@@ -670,11 +670,17 @@ async function loadSheetData() {
   // (see fetchCustomPlanAreaQty's other caller, buildRowsForTab, for that).
   let jq = {};
   if (activeTab === '2026 CUSTOM PLAN') {
+    // Reads the saved job_quantities row from Supabase -- NOT a live Sheet
+    // read. The Sheet is only ever read during "Import from Sheet" (see
+    // fetchCustomPlanAreaQty's other caller, buildRowsForTab); this display
+    // reflects whatever was last imported into the database, same as the
+    // house-tab branch below already does with reference_house_measurements.
     try {
-      const token = await getSheetsAccessToken();
-      jq = await fetchCustomPlanAreaQty(token, SHEET_ID);
+      const { data: jqRow, error } = await sb.from('job_quantities').select('*').eq('id', 1).maybeSingle();
+      if (error) throw error;
+      jq = jqRow || {};
     } catch (e) {
-      console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
+      console.log('Could not read job_quantities: ' + e.message);
     }
   } else if (matchedHouse) {
     // House tabs (Kiawah, Coronado, etc.) have their own BUILDING AREA/
