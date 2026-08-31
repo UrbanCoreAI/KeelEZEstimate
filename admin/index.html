@@ -604,7 +604,7 @@ async function loadSheetData() {
       // display needs its actual dollar result, so this bypasses the
       // shared sheetsGet() (which always forces FORMULA render mode).
       const q = ['B5', 'B6', 'B7'].map(c => 'ranges=' + encodeURIComponent(`'ADDITIONAL PRICING'!${c}`)).join('&');
-      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
+      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
       const valBody = await valRes.json();
       if (!valRes.ok) throw new Error(JSON.stringify(valBody));
       const [unfRows, finRows, grandTotalRows] = valBody.valueRanges.map(vr => vr.values || []);
@@ -672,7 +672,7 @@ async function loadSheetData() {
   if (activeTab === '2026 CUSTOM PLAN') {
     try {
       const token = await getSheetsAccessToken();
-      jq = await fetchCustomPlanAreaQty(token);
+      jq = await fetchCustomPlanAreaQty(token, SHEET_ID);
     } catch (e) {
       console.log('Could not read BUILDING AREA/QUANTITIES block: ' + e.message);
     }
@@ -970,15 +970,28 @@ const JQ_QTY_FIELD_BY_OFFSET = { 0: 'exterior_doors', 1: 'windows', 2: 'baths', 
 // computed numbers (UNFORMATTED_VALUE — I3 and I13 are live Sheet formulas,
 // so the shared sheetsGet()'s FORMULA render mode would return formula text
 // here instead of the number). Used by both the grid view and the importer.
-async function fetchCustomPlanAreaQty(token) {
+async function fetchCustomPlanAreaQty(token, spreadsheetId) {
   const q = ['I3:I13', 'I18:I29'].map(r => 'ranges=' + encodeURIComponent(`'${CUSTOM_TAB}'!${r}`)).join('&');
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { headers: { Authorization: 'Bearer ' + token } });
+  console.log('[Keel][JQ] fetching BUILDING AREA/QUANTITIES from spreadsheet ' + spreadsheetId + ', tab "' + CUSTOM_TAB + '"');
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
   const body = await res.json();
   if (!res.ok) throw new Error(JSON.stringify(body));
   const [areaVals, qtyVals] = body.valueRanges.map(vr => vr.values || []);
+  console.log('[Keel][JQ] raw I3:I13 response =', JSON.stringify(areaVals));
+  console.log('[Keel][JQ] raw I18:I29 response =', JSON.stringify(qtyVals));
   const jq = {};
-  Object.keys(JQ_AREA_FIELD_BY_OFFSET).forEach(off => { jq[JQ_AREA_FIELD_BY_OFFSET[off]] = Number((areaVals[off] && areaVals[off][0]) || 0); });
-  Object.keys(JQ_QTY_FIELD_BY_OFFSET).forEach(off => { jq[JQ_QTY_FIELD_BY_OFFSET[off]] = Number((qtyVals[off] && qtyVals[off][0]) || 0); });
+  Object.keys(JQ_AREA_FIELD_BY_OFFSET).forEach(off => {
+    const field = JQ_AREA_FIELD_BY_OFFSET[off];
+    const raw = areaVals[off] && areaVals[off][0];
+    jq[field] = Number(raw || 0);
+    console.log('[Keel][JQ] I' + (3 + Number(off)) + ' (' + field + ') = ' + JSON.stringify(raw) + ' -> ' + jq[field]);
+  });
+  Object.keys(JQ_QTY_FIELD_BY_OFFSET).forEach(off => {
+    const field = JQ_QTY_FIELD_BY_OFFSET[off];
+    const raw = qtyVals[off] && qtyVals[off][0];
+    jq[field] = Number(raw || 0);
+    console.log('[Keel][JQ] I' + (18 + Number(off)) + ' (' + field + ') = ' + JSON.stringify(raw) + ' -> ' + jq[field]);
+  });
   return jq;
 }
 const SITE_TAB = 'SITE OPTIONS';
@@ -1079,6 +1092,7 @@ function getSheetsAccessToken() {
 async function sheetsGet(token, spreadsheetId, ranges) {
   const q = ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&');
   const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '/values:batchGet?' + q + '&valueRenderOption=FORMULA', {
+    cache: 'no-store',
     headers: { Authorization: 'Bearer ' + token }
   });
   const body = await res.json();
@@ -1093,6 +1107,7 @@ async function sheetsGet(token, spreadsheetId, ranges) {
 async function fetchSheetTabNames(spreadsheetId) {
   const token = await getSheetsAccessToken();
   const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + '?fields=sheets.properties.title', {
+    cache: 'no-store',
     headers: { Authorization: 'Bearer ' + token }
   });
   const body = await res.json();
@@ -1427,7 +1442,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // manually typed into the extension, not what's actually in the Sheet.
     // This closes that gap the same way reference_house_measurements
     // already does for house tabs.
-    const sheetJq = await fetchCustomPlanAreaQty(token);
+    const sheetJq = await fetchCustomPlanAreaQty(token, spreadsheetId);
     const { data: currentJq } = await sb.from('job_quantities').select('*').eq('id', 1).maybeSingle();
     const jqCurrent = currentJq || {};
     [...Object.values(JQ_AREA_FIELD_BY_OFFSET), ...Object.values(JQ_QTY_FIELD_BY_OFFSET)].forEach(field => {
@@ -1456,7 +1471,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     try {
       const ivRes = await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent("'" + tabName + "'!I1:I40")}?valueRenderOption=UNFORMATTED_VALUE`,
-        { headers: { Authorization: 'Bearer ' + token } }
+        { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } }
       );
       const ivBody = await ivRes.json();
       if (!ivRes.ok) console.warn('[Keel] I-column fetch failed for ' + tabName + ':', JSON.stringify(ivBody));
