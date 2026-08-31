@@ -105,6 +105,17 @@
     <input class="formula-input" id="formula-bar-input" value="Keel EZ Estimate Master Cost Sheet" readonly />
   </div>
 
+  <div id="preview-banner" style="display:none;background:#fff8e1;border-bottom:2px solid #f9ab00;padding:8px 14px;font-size:12px;align-items:center;justify-content:space-between;gap:10px;">
+    <div><strong>🔍 PREVIEWING IMPORT</strong> — <span id="preview-banner-summary">loading…</span> Click a yellow cell to skip it, a green cell to bring it back.</div>
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+        <input type="checkbox" id="preview-skip-issues-chk" onchange="setSkipFormatIssues(this.checked)"> Skip cells that look wrong
+      </label>
+      <button class="modal-btn btn-cancel" onclick="cancelImportPreview()">Cancel</button>
+      <button class="modal-btn btn-confirm" onclick="confirmImportFromPreviewTabs()">Confirm Import</button>
+    </div>
+  </div>
+
   <div class="spreadsheet-container" id="sheet-grid-container">
     <table class="sheet-table">
       <thead>
@@ -138,10 +149,17 @@
     </table>
   </div>
 
+  <!-- Import Preview grid — a temporary, tinted view of one selected tab
+       (see buildImportGridHtml/renderPreviewGridTab) that stands in for
+       the normal grid while previewing an import. Never shown at the
+       same time as sheet-grid-container/takeoff-history-container. -->
+  <div class="spreadsheet-container" id="preview-grid-container" style="display:none;background:#fffdf5;"></div>
+
   <!-- House tabs (2026 MASTER PLAN X) are rendered dynamically from the
        "houses" table by loadHouses() below — no hardcoded house list, so a
        new base plan just needs a row in that table, nothing edited here. -->
   <div class="sheet-tabs-footer">
+    <span id="preview-tabs-slot" style="display:contents;"></span>
     <div class="tab-item active" onclick="switchSheetTab('2026 CUSTOM PLAN', this)">2026 CUSTOM PLAN</div>
     <span id="house-tabs-slot" style="display:contents;"></span>
     <div class="tab-item" style="background:#e6f4ea;color:#0f9d58;" onclick="addBasePlan()" title="Add a new base plan">+ Add Base Plan</div>
@@ -224,6 +242,8 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON, {
 });
 
 let activeTab = '2026 CUSTOM PLAN';
+let previewModeActive = false;
+const PREVIEW_PREFIX = '__preview__:';
 let activeEditTarget = null;
 
 async function signInWithPassword() {
@@ -385,6 +405,18 @@ function selectCell(cellRef, formulaOrVal) {
 }
 
 async function loadSheetData() {
+  // A preview tab (see enterTabPreviewMode) is rendered entirely
+  // differently — its own container, sourced from importPreview rather
+  // than a fresh Supabase read — so it's handled first and returns early.
+  const previewContainer = document.getElementById('preview-grid-container');
+  if (activeTab.startsWith(PREVIEW_PREFIX)) {
+    document.getElementById('sheet-grid-container').style.display = 'none';
+    document.getElementById('takeoff-history-container').style.display = 'none';
+    renderPreviewGridTab(activeTab.slice(PREVIEW_PREFIX.length));
+    return;
+  }
+  previewContainer.style.display = 'none';
+
   // TAKEOFF HISTORY uses its own table (different shape, ~22 columns) —
   // swap which container is visible, render, and skip the normal A-F grid.
   const gridContainer    = document.getElementById('sheet-grid-container');
@@ -1417,7 +1449,7 @@ async function loadCombinedImportPreview() {
     }
     rows.forEach((r, i) => { r._idx = i; }); // stable key for the preview grid's yellow/green toggle
     importPreview = { rows, skippedUnknown, detectedNewBasePlans, tabDataByTab, revertedKeys: new Set() };
-    renderImportPreview();
+    enterTabPreviewMode();
   } catch (e) {
     body.innerHTML = '<p style="color:#d93025;">Error loading selected tabs: ' + e.message + '</p><button class="modal-btn btn-cancel" onclick="renderTabCheckboxList()">‹ Back to tab list</button>';
   }
@@ -1448,7 +1480,7 @@ async function confirmNewBasePlan(tabName) {
   importPreview.rows = importPreview.rows.concat(tabRows);
   if (tabInfo) importPreview.tabDataByTab[tabName] = tabInfo;
   importPreview.detectedNewBasePlans = importPreview.detectedNewBasePlans.filter(d => d.tabName !== tabName);
-  renderImportPreview();
+  refreshImportView();
 }
 
 // Everything that used to be inline in loadImportPreview() for a single
@@ -1747,7 +1779,7 @@ function toggleImportCell(idx) {
   if (!importPreview.revertedKeys) importPreview.revertedKeys = new Set();
   if (importPreview.revertedKeys.has(idx)) importPreview.revertedKeys.delete(idx);
   else importPreview.revertedKeys.add(idx);
-  renderImportPreview();
+  refreshImportView();
 }
 function importCellHtml(diffRow) {
   if (!diffRow) return '';
@@ -1842,6 +1874,103 @@ function buildImportGridHtml(tabName) {
   }
   html += '</table>';
   return html;
+}
+
+// Tab-based Import Preview — replaces the old flat "list of changes"
+// modal for house/custom tabs. Instead of a popup, it adds a temporary,
+// visually-tinted "🔍 tab" per selected grid-eligible tab right in the
+// tab bar, showing the FULL sheet-style grid (see buildImportGridHtml)
+// so a diff — or an error like "9 items not found" — is seen in the
+// exact same layout as the live sheet, not as an isolated text list.
+function enterTabPreviewMode() {
+  document.getElementById('import-modal').classList.remove('active');
+  const previewTabNames = Object.keys(importPreview.tabDataByTab).filter(t => {
+    const ti = importPreview.tabDataByTab[t];
+    return ti && (ti.type === 'house' || ti.type === 'custom') && ti.gridItems && ti.gridItems.length;
+  });
+  if (!previewTabNames.length) {
+    // Nothing grid-shaped selected (e.g. only Site Options) — the old
+    // flat modal view still works fine for those, so fall back to it.
+    document.getElementById('import-modal').classList.add('active');
+    renderImportPreview();
+    return;
+  }
+  previewModeActive = true;
+  const slot = document.getElementById('preview-tabs-slot');
+  slot.innerHTML = previewTabNames.map(t =>
+    `<div class="tab-item preview-tab-item" style="background:#fff2b2;border-bottom:3px solid #f9ab00;" onclick="switchSheetTab('${PREVIEW_PREFIX}${t.replace(/'/g, "\\'")}', this)">🔍 ${t}</div>`
+  ).join('');
+  document.getElementById('import-btn').style.display = 'none';
+  document.getElementById('preview-banner').style.display = 'flex';
+  document.getElementById('preview-skip-issues-chk').checked = skipFormatIssues;
+  switchSheetTab(PREVIEW_PREFIX + previewTabNames[0], slot.firstElementChild);
+}
+
+// Re-renders whichever view is currently showing the diff — the tab
+// preview grid if one is active, otherwise the old modal list — after
+// something changes it (a cell toggle, the skip-issues checkbox, a new
+// base plan added mid-preview).
+function refreshImportView() {
+  if (previewModeActive && activeTab.startsWith(PREVIEW_PREFIX)) renderPreviewGridTab(activeTab.slice(PREVIEW_PREFIX.length));
+  else renderImportPreview();
+}
+
+// Renders one preview tab's content into #preview-grid-container: any
+// "not found"/format-issue warnings scoped to this tab, then the full
+// grid itself.
+function renderPreviewGridTab(tabName) {
+  const pc = document.getElementById('preview-grid-container');
+  pc.style.display = '';
+  const { rows, skippedUnknown } = importPreview;
+  const tabRows = rows.filter(r => r.tab === tabName);
+  const changed = tabRows.filter(r => r.changed);
+  const missing = changed.filter(r => !r.valid && r.field === null);
+  const renamable = missing.filter(r => r.table !== 'reference_house_measurements');
+  const unhandledMissing = missing.filter(r => r.table === 'reference_house_measurements');
+  const issues = changed.filter(r => !r.valid && r.field !== null).concat(unhandledMissing);
+  const writableIssues = issues.filter(r => r.field !== null);
+
+  let html = '';
+  if (skippedUnknown && skippedUnknown.length) {
+    html += '<p style="color:#5f6368;padding:8px 10px 0;">Not recognized, skipped: ' + skippedUnknown.join(', ') + '.</p>';
+  }
+  if (renamable.length) {
+    html += '<div style="margin:10px;background:#fef7e0;border:1px solid #f9ab00;border-radius:4px;padding:8px 10px;font-size:12px;">' +
+      '<strong>' + renamable.length + ' item(s) not found by name in this tab</strong> — matching is by exact text, so this almost always means it was renamed/reworded in the Sheet. Type its current name and check "Replace row" to rename + import it.' +
+      renamable.map(renderMissingRowControl).join('') +
+      '</div>';
+  }
+  if (issues.length) {
+    html += '<div style="margin:10px;background:#fce8e6;border:1px solid #d93025;border-radius:4px;padding:8px 10px;font-size:12px;color:#d93025;">' +
+      (writableIssues.length ? '<strong>⚠ ' + writableIssues.length + ' cell(s) don\'t look right' + (skipFormatIssues ? ' and were skipped' : ' — will be written anyway, shown yellow below') + '</strong>' : '') +
+      (writableIssues.length && unhandledMissing.length ? ', plus ' : '') +
+      (unhandledMissing.length ? '<strong>' + unhandledMissing.length + ' reference measurement(s) not found</strong> (never importable)' : '') +
+      '</div>';
+  }
+  html += buildImportGridHtml(tabName) || '<p style="padding:20px;color:#5f6368;">Nothing to preview here — the database already matches this tab.</p>';
+  pc.innerHTML = html;
+  updatePreviewBannerSummary();
+}
+
+function updatePreviewBannerSummary() {
+  const writable = importPreview.rows.filter(r => r.changed && (r.valid || !skipFormatIssues));
+  const reverted = writable.filter(isRowReverted).length;
+  const el = document.getElementById('preview-banner-summary');
+  if (el) el.textContent = (writable.length - reverted) + ' change(s) ready to import' + (reverted ? ', ' + reverted + ' reverted to current' : '') + '.';
+}
+
+function cancelImportPreview() {
+  previewModeActive = false;
+  importPreview = null;
+  document.getElementById('preview-tabs-slot').innerHTML = '';
+  document.getElementById('preview-banner').style.display = 'none';
+  document.getElementById('preview-grid-container').style.display = 'none';
+  document.getElementById('import-btn').style.display = '';
+  switchSheetTab('2026 CUSTOM PLAN', document.querySelector('.sheet-tabs-footer .tab-item:not(.preview-tab-item)'));
+}
+
+async function confirmImportFromPreviewTabs() {
+  await confirmImport();
 }
 
 function renderImportPreview() {
@@ -1989,7 +2118,7 @@ function toggleFormatLog() {
 
 function setSkipFormatIssues(checked) {
   skipFormatIssues = checked;
-  renderImportPreview();
+  refreshImportView();
 }
 
 // What the "?" reveals — a plain-language, grouped summary instead of a
@@ -2143,6 +2272,17 @@ async function confirmImport() {
     results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported: ' + r.label));
   }
 
+  if (previewModeActive) {
+    previewModeActive = false;
+    document.getElementById('preview-tabs-slot').innerHTML = '';
+    document.getElementById('preview-banner').style.display = 'none';
+    document.getElementById('preview-grid-container').style.display = 'none';
+    document.getElementById('import-btn').style.display = '';
+    importPreview = null;
+    alert('Import complete:\n\n' + results.join('\n'));
+    switchSheetTab('2026 CUSTOM PLAN', document.querySelector('.sheet-tabs-footer .tab-item:not(.preview-tab-item)'));
+    return;
+  }
   document.getElementById('import-modal-body').innerHTML = '<p><strong>Done:</strong></p><ul>' + results.map(x => `<li>${x}</li>`).join('') + '</ul>' +
     '<button class="modal-btn btn-cancel" onclick="closeImportModal()">Close</button>';
   confirmBtn.style.display = 'none';
