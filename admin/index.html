@@ -210,7 +210,18 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const ALLOWED_EMAILS = ['alana@kchva.com', 'jduke@kchva.com'];
 
 const { createClient } = supabase;
-const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+// Same bug class as the Sheets API cache-busting fix above: plain fetch()
+// is allowed to reuse the browser's HTTP cache for an identical GET, and
+// every Supabase read here is a GET to the same handful of URLs (e.g.
+// job_quantities?id=eq.1&select=*) called over and over as the page is
+// used -- so a stale response from an earlier load/query can get served
+// back instead of the current database state (e.g. right after an
+// Import from Sheet write). Forcing no-store on every request through
+// this client fixes it everywhere at once instead of one call site at a
+// time.
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON, {
+  global: { fetch: (url, options) => fetch(url, { ...options, cache: 'no-store' }) }
+});
 
 let activeTab = '2026 CUSTOM PLAN';
 let activeEditTarget = null;
