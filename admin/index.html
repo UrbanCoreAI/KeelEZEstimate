@@ -828,7 +828,7 @@ async function loadSheetData() {
       // the BUILDING AREA/QUANTITIES columns (H/I/J) stay aligned.
       let blankTr = document.createElement('tr');
       const bd = cellDiffByRef['D' + rowNum], bf = cellDiffByRef['F' + rowNum];
-      blankTr.innerHTML = `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td><td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td><td></td><td>${bd ? importCellHtml(bd) : ''}</td><td></td><td>${bf ? importCellHtml(bf) : ''}</td>${hijCellsFor(rowNum)}`;
+      blankTr.innerHTML = `<td class="row-hdr" style="text-align:center;background:#f1f3f4;color:#5f6368;">${rowNum}</td><td></td><td style="color:#9aa0a6;font-style:italic;">(subtotal row — not tracked)</td><td></td><td>${bd ? importCellHtml(bd) : ''}</td><td></td><td>${bf ? importCellHtml(bf, true) : ''}</td>${hijCellsFor(rowNum)}`;
       tbody.appendChild(blankTr);
       continue;
     }
@@ -1001,7 +1001,7 @@ async function loadSheetData() {
         <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\'")}', '${safeQtyF}')">✏️</button>
       `;
     const eHtml = eDiff
-      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + amountFromFormula(eDiff.next).toFixed(2)) : importCellHtml(eDiff))
+      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + amountFromFormula(eDiff.next).toFixed(2)) : importCellHtml(eDiff, true))
       : `
         ${formattedAmt}
         ${activeTab === '2026 CUSTOM PLAN'
@@ -1010,7 +1010,7 @@ async function loadSheetData() {
         }
       `;
     const fHtml = fDiff
-      ? (isCustomTab ? importFormulaCellHtml(fDiff, '$' + unitCost.toFixed(2), '$' + unitCostFromFormula(fDiff.next).toFixed(2)) : importCellHtml(fDiff))
+      ? (isCustomTab ? importFormulaCellHtml(fDiff, '$' + unitCost.toFixed(2), '$' + unitCostFromFormula(fDiff.next).toFixed(2)) : importCellHtml(fDiff, true))
       : `
         ${formattedUnitCost}
         ${activeTab === '2026 CUSTOM PLAN'
@@ -2070,15 +2070,26 @@ function toggleImportCell(event, idx) {
   else importPreview.revertedKeys.add(idx);
   refreshImportView();
 }
-function importCellHtml(diffRow) {
+function importCellHtml(diffRow, isCurrency) {
   if (!diffRow) return '';
   const reverted = isRowReverted(diffRow);
   const showVal = reverted ? diffRow.current : diffRow.next;
+  // Amount/Unit Cost diffs (house tabs' E/F) are plain numbers straight
+  // off house_rates -- unlike every already-confirmed cell elsewhere on
+  // the grid, which runs through toLocaleString('en-US', {...}) for a
+  // "$1,234.00" look, a not-yet-confirmed value here was shown completely
+  // unformatted ("275" instead of "$275.00"), which read as a different,
+  // wrong-looking number next to every other dollar cell. Quantity diffs
+  // (D) and Building Area/Quantities diffs (I) stay plain -- only pass
+  // true from an Amount/Unit Cost call site.
+  const displayVal = (isCurrency && showVal !== '' && isFinite(Number(showVal)))
+    ? '$' + Number(showVal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : showVal;
   const bg = reverted ? '#ceead6' : '#fff2b2';
   const title = reverted
     ? 'Currently in the database — click to import the Sheet\'s new value instead'
     : 'Sheet\'s new value — click to keep the current database value (won\'t be imported)';
-  return `<span onclick="toggleImportCell(event, ${diffRow._idx})" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${showVal}</span>`;
+  return `<span onclick="toggleImportCell(event, ${diffRow._idx})" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${displayVal}</span>`;
 }
 // Same yellow/green toggle as importCellHtml, but for a cell whose
 // underlying diff (diffRow.current/.next) is raw FORMULA TEXT rather than
