@@ -1595,6 +1595,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const trBody = await trRes.json();
       if (!trRes.ok) console.warn('[Keel] Total-row (D:F) fetch failed for ' + tabName + ':', JSON.stringify(trBody));
       if (trRes.ok) totalRowVals = trBody.values || [];
+      console.log('[Keel][TotalRows] ' + tabName + ': fetch status=' + trRes.status + ', rows returned=' + totalRowVals.length);
     } catch (e) { console.warn('[Keel] could not read Total-row (D:F) values for ' + tabName + ':', e.message); }
     // col: 0 = D, 1 = E, 2 = F
     function totalCell(rowNum, col) {
@@ -1701,6 +1702,10 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const amountRaw = item.is_fixed ? unitRaw : (qtyRaw * unitRaw);
       const sheetAmtRaw = String(amountRaw);
       const sheetQtyRaw = String(qtyRaw);
+      console.log('[Keel][TotalRows] ' + tabName + ' / "' + item.item_name + '" (cost_code=' + item.cost_code + ', is_fixed=' + item.is_fixed + '): ' +
+        'nameRow=' + nameRow + ' rawD(nameRow-1)=' + JSON.stringify(totalCell(nameRow - 1, 0)) + ' rawE(nameRow)=' + JSON.stringify(totalCell(nameRow, 1)) +
+        ' rawF(nameRow)=' + JSON.stringify(totalCell(nameRow, 2)) + ' => qtyRaw=' + qtyRaw + ' unitRaw=' + unitRaw + ' amountRaw=' + amountRaw +
+        ' | existing house_rates row? ' + (hr ? ('yes (amount=' + hr.amount + ', quantity=' + hr.quantity + ')') : 'no'));
       if (!hr) {
         pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'F' + nameRow);
         const pushed = rows[rows.length - 1];
