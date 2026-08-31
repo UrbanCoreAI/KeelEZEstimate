@@ -906,7 +906,7 @@ async function loadSheetData() {
     // qtyVal of the Total row itself, since that's what the Sheet
     // actually computes and the two can legitimately differ when the
     // underlying items don't share one common quantity.
-    function amountFromFormula(formulaStr, forItem) {
+    function amountFromFormula(formulaStr, forItem, debugLabel) {
       const item = forItem || r;
       const f = (formulaStr || '').trim();
       const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
@@ -915,11 +915,16 @@ async function loadSheetData() {
         let total = 0;
         names.forEach(nm => {
           const refItem = itemByName[nm.toLowerCase()];
-          if (refItem) {
-            const refQty = refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq);
-            total += refQty * unitCostFromFormula(refItem.unit_cost_formula, refItem);
+          if (!refItem) {
+            if (debugLabel) console.warn('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" has no matching cost_items row -- excluded from the sum');
+            return;
           }
+          const refQty = refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq);
+          const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
+          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + (refQty * refUnit).toFixed(2));
+          total += refQty * refUnit;
         });
+        if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL = ' + total.toFixed(2));
         return total;
       }
       const n = Number(f);
@@ -949,7 +954,7 @@ async function loadSheetData() {
       // Total row itself. Total Fixed Cost (is_fixed) has no separate
       // Amount -- it IS the unit cost -- so it's excluded here.
       amtVal = (isTotalRowItem(r) && !r.is_fixed && r.amount_formula)
-        ? amountFromFormula(r.amount_formula)
+        ? amountFromFormula(r.amount_formula, r, r.item_name)
         : unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
@@ -1684,14 +1689,38 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // name instead of row position. A formula that's already a
     // cross-house AVERAGE (some of these rows' F column uses that
     // instead) is left untouched — that form already works today.
-    function convertSameTabSumFormula(formulaStr) {
+    function convertSameTabSumFormula(formulaStr, totalRowNum) {
       const f = (formulaStr || '').trim();
       const m = /^=sum\([a-z](\d+)(?::[a-z](\d+))?\)$/i.exec(f);
       if (!m) return f;
-      const startRow = parseInt(m[1], 10), endRow = m[2] ? parseInt(m[2], 10) : startRow;
+      const startRow = parseInt(m[1], 10);
+      let endRow = m[2] ? parseInt(m[2], 10) : startRow;
+      // The Sheet's own SUM range can go stale when a new line item gets
+      // inserted between the range's declared last row and the Total row
+      // itself, without anyone going back to widen the SUM's own range to
+      // match -- e.g. "Quality Inspection" sits at row 25, directly above
+      // "Total Fixed Cost" (row 26), matching every row above it's TYPE
+      // column (Fixed Cost), but "Total Fixed Cost"'s own formula was
+      // never updated past "=SUM(F3:F24)" to include it. Any consecutive
+      // named row of the SAME type, between the declared range's end and
+      // the Total row itself, is folded in here so a newly added item is
+      // picked up automatically without needing the Sheet formula edited
+      // by hand every time.
+      if (totalRowNum) {
+        const lastType = (sheetRows[endRow - 3] && sheetRows[endRow - 3][1]) ? String(sheetRows[endRow - 3][1]).trim() : '';
+        let rn = endRow + 1;
+        while (rn < totalRowNum) {
+          const rowVals2 = sheetRows[rn - 3] || [];
+          const nm2 = (rowVals2[0] || '').toString().trim();
+          const ty2 = (rowVals2[1] || '').toString().trim();
+          if (!nm2 || ty2 !== lastType) break;
+          endRow = rn;
+          rn++;
+        }
+      }
       const names = [];
-      for (let rn = startRow; rn <= endRow; rn++) {
-        const nm = (sheetRows[rn - 3] && sheetRows[rn - 3][0]) ? String(sheetRows[rn - 3][0]).trim() : '';
+      for (let rn2 = startRow; rn2 <= endRow; rn2++) {
+        const nm = (sheetRows[rn2 - 3] && sheetRows[rn2 - 3][0]) ? String(sheetRows[rn2 - 3][0]).trim() : '';
         if (nm) names.push(nm.replace(/\|/g, ''));
       }
       return names.length ? ('=ITEMSUM(' + names.join('|') + ')') : f;
@@ -1731,7 +1760,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const rowVals = sheetRows[rowIdx] || [];
       if (item.is_fixed) {
         const rawUnit = (rowVals[3] || '').toString(); // E (value lives here for the fixed-cost row, F is blank)
-        const sheetUnit = convertSameTabSumFormula(rawUnit);
+        const sheetUnit = convertSameTabSumFormula(rawUnit, nameRow);
         console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', E=' + JSON.stringify(rawUnit) + ' -> ' + JSON.stringify(sheetUnit));
         pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'E' + nameRow);
       } else {
@@ -1739,8 +1768,8 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
         const sheetQty = (qtyRowVals[2] || '').toString(); // D, row directly above
         const rawUnit = (rowVals[4] || '').toString(); // F, name row
         const rawAmt = (rowVals[3] || '').toString(); // E, name row -- the Total's own dollar-sum formula
-        const sheetUnit = convertSameTabSumFormula(rawUnit);
-        const sheetAmt = convertSameTabSumFormula(rawAmt);
+        const sheetUnit = convertSameTabSumFormula(rawUnit, nameRow);
+        const sheetAmt = convertSameTabSumFormula(rawAmt, nameRow);
         console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', D(above)=' + JSON.stringify(sheetQty) + ', E=' + JSON.stringify(rawAmt) + ' -> ' + JSON.stringify(sheetAmt) + ', F=' + JSON.stringify(rawUnit) + ' -> ' + JSON.stringify(sheetUnit));
         pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, { valid: true }, false, 'D' + (nameRow - 1));
         pushRowIfChanged(rows, item.item_name + ' — Amount Formula', 'cost_items', item.id, 'amount_formula', item.amount_formula, sheetAmt, { valid: true }, false, 'E' + nameRow);
