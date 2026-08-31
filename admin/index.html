@@ -351,7 +351,8 @@ async function confirmEdit() {
     return;
   }
 
-  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier', 'markup_percent'];
+  const JOB_QUANTITIES_NUMERIC_COLS = ['basement_sf', 'floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf', 'exterior_doors', 'windows', 'baths', 'cabinets_lf', 'countertop_lf', 'staircases', 'porch_columns', 'garage_doors', 'interior_doors', 'carpet_sf', 'hardwood_sf', 'tile_sf', 'unfinished_basement_sf', 'finished_basement_sf'];
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier', 'markup_percent', ...JOB_QUANTITIES_NUMERIC_COLS];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
@@ -360,7 +361,8 @@ async function confirmEdit() {
     payload[col] = NUMERIC_COLS.includes(col) ? parseFloat(newVal) || 0 : newVal;
   }
 
-  const { error } = await sb.from(table).update(payload).eq('id', id);
+  const idCol = table === 'reference_house_measurements' ? 'house' : 'id';
+  const { error } = await sb.from(table).update(payload).eq(idCol, id);
   closeModal();
   if (error) { alert('Error updating: ' + error.message); }
   else { loadSheetData(); }
@@ -567,16 +569,25 @@ async function loadSheetData() {
       tbody.appendChild(trMarkup);
     }
 
-    // Unfinished/Finished SF (B5/B6) and the Grand Total ($, B7) — all
-    // read-only here: B5/B6 are per-job data written on every estimate
-    // (not a rate/pricing constant), and B7 is a live Sheet formula that
-    // computes itself from B2-B6, never written by any code path.
+    // Unfinished/Finished Basement SF are per-job measurements, stored in
+    // job_quantities (added by 04_basement_pricing.sql) instead of only
+    // living in the Sheet's B5/B6 — editable here like every other DB
+    // field in this app. Grand Total ($) is computed locally from those
+    // two values plus the 3 rate fields above, using the exact same math
+    // as computeBasementLineItems() in the public webpage's index.html
+    // (kept in sync by hand — see that function for the line-item
+    // breakdown this collapses into one number), NOT read from the
+    // Sheet's B7 formula.
+    const { data: jqRow } = await sb.from('job_quantities').select('unfinished_basement_sf, finished_basement_sf').eq('id', 1).maybeSingle();
+    const unfinishedSf = Number(jqRow && jqRow.unfinished_basement_sf) || 0;
+    const finishedSf = Number(jqRow && jqRow.finished_basement_sf) || 0;
+
     let trUnf = document.createElement('tr');
     let unfRow = rowIdx++;
     trUnf.innerHTML = `
       <td class="row-hdr" style="text-align:center;">${unfRow}</td>
-      <td colspan="3"><strong>Unfinished Basement (SF) — last written job</strong></td>
-      <td colspan="2" id="basement-unfinished-cell">Loading…</td>
+      <td colspan="3"><strong>Unfinished Basement (SF) — current job</strong></td>
+      <td colspan="2">${unfinishedSf} <button class="pencil-btn" onclick="openEditModal('job_quantities', 1, 'unfinished_basement_sf', 'Unfinished Basement (SF)', 'Unfinished Basement (SF)', '=UNFINISHED_BASEMENT_SF', '${unfinishedSf}')">✏️</button></td>
       <td></td>
     `;
     tbody.appendChild(trUnf);
@@ -584,44 +595,27 @@ async function loadSheetData() {
     let finRow = rowIdx++;
     trFin.innerHTML = `
       <td class="row-hdr" style="text-align:center;">${finRow}</td>
-      <td colspan="3"><strong>Finished Basement (SF) — last written job</strong></td>
-      <td colspan="2" id="basement-finished-cell">Loading…</td>
+      <td colspan="3"><strong>Finished Basement (SF) — current job</strong></td>
+      <td colspan="2">${finishedSf} <button class="pencil-btn" onclick="openEditModal('job_quantities', 1, 'finished_basement_sf', 'Finished Basement (SF)', 'Finished Basement (SF)', '=FINISHED_BASEMENT_SF', '${finishedSf}')">✏️</button></td>
       <td></td>
     `;
     tbody.appendChild(trFin);
+
+    let grandTotal = 0;
+    if (unfinishedSf > 0) grandTotal += (Number(data.fixed_cost_per_house) || 0) + unfinishedSf * (Number(data.shell_cost_per_sf) || 0);
+    if (finishedSf > 0) {
+      if (unfinishedSf === 0) grandTotal += Number(data.fixed_cost_per_house) || 0;
+      grandTotal += finishedSf * ((Number(data.shell_cost_per_sf) || 0) + (Number(data.finish_cost_per_sf) || 0));
+    }
     let trGrandTotal = document.createElement('tr');
     let grandTotalRow = rowIdx++;
     trGrandTotal.innerHTML = `
       <td class="row-hdr" style="text-align:center;">${grandTotalRow}</td>
-      <td colspan="3"><strong>Grand Total ($) — last written job</strong></td>
-      <td colspan="2" id="basement-grand-total-cell">Loading…</td>
+      <td colspan="3"><strong>Grand Total ($) — current job</strong></td>
+      <td colspan="2">$${grandTotal.toFixed(2)}</td>
       <td></td>
     `;
     tbody.appendChild(trGrandTotal);
-    try {
-      const token = await getSheetsAccessToken();
-      // Computed values, not formula text — B7 is a formula, and this
-      // display needs its actual dollar result, so this bypasses the
-      // shared sheetsGet() (which always forces FORMULA render mode).
-      const q = ['B5', 'B6', 'B7'].map(c => 'ranges=' + encodeURIComponent(`'ADDITIONAL PRICING'!${c}`)).join('&');
-      const valRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchGet?${q}&valueRenderOption=UNFORMATTED_VALUE`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
-      const valBody = await valRes.json();
-      if (!valRes.ok) throw new Error(JSON.stringify(valBody));
-      const [unfRows, finRows, grandTotalRows] = valBody.valueRanges.map(vr => vr.values || []);
-      const unfCell = document.getElementById('basement-unfinished-cell');
-      if (unfCell) unfCell.textContent = (unfRows && unfRows[0] && unfRows[0][0]) || '0';
-      const finCell = document.getElementById('basement-finished-cell');
-      if (finCell) finCell.textContent = (finRows && finRows[0] && finRows[0][0]) || '0';
-      const gtCell = document.getElementById('basement-grand-total-cell');
-      if (gtCell) gtCell.textContent = '$' + ((grandTotalRows && grandTotalRows[0] && grandTotalRows[0][0]) || '0');
-    } catch (e) {
-      const unfCell = document.getElementById('basement-unfinished-cell');
-      if (unfCell) unfCell.textContent = '(could not read — ' + e.message + ')';
-      const finCell = document.getElementById('basement-finished-cell');
-      if (finCell) finCell.textContent = '(could not read)';
-      const gtCell = document.getElementById('basement-grand-total-cell');
-      if (gtCell) gtCell.textContent = '(could not read)';
-    }
     return;
   }
 
@@ -711,6 +705,17 @@ async function loadSheetData() {
     }
     return total;
   }
+  // Edit button for a Building Area/Quantities cell — Custom Plan writes
+  // to job_quantities (singleton id=1), a house tab writes to
+  // reference_house_measurements (keyed by house name instead of id; see
+  // confirmEdit()'s idCol special-case for that table).
+  function jqEditBtn(field, label, val) {
+    const safeLabel = label.replace(/'/g, "\\'");
+    const isCustom = activeTab === '2026 CUSTOM PLAN';
+    const table = isCustom ? 'job_quantities' : 'reference_house_measurements';
+    const idArg = isCustom ? '1' : `'${currentHouse}'`;
+    return `<button class="pencil-btn" onclick="openEditModal('${table}', ${idArg}, '${field}', '${safeLabel}', '${safeLabel}', '=${field.toUpperCase()}', '${val}')">\u270f\ufe0f</button>`;
+  }
   function hijCellsFor(rowNum) {
     // Blank only when there's genuinely nothing to show (a tab that isn't
     // Custom Plan or a matched house tab at all, e.g. SITE OPTIONS) — not
@@ -719,8 +724,9 @@ async function loadSheetData() {
     if (!(activeTab === '2026 CUSTOM PLAN') && !matchedHouse) return '<td></td><td></td><td></td><td></td>';
     if (rowNum >= 3 && rowNum <= 12) {
       const label = AREA_LABELS[rowNum - 3];
-      const val = jq[ADMIN_ROW_TO_FIELD[rowNum]] || 0;
-      return `<td></td><td>${label}</td><td>${val}</td><td>SF</td>`;
+      const field = ADMIN_ROW_TO_FIELD[rowNum];
+      const val = jq[field] || 0;
+      return `<td></td><td>${label}</td><td>${val} ${jqEditBtn(field, label, val)}</td><td>SF</td>`;
     }
     if (rowNum === 13) {
       const val = totalAreaSum(jq);
@@ -728,8 +734,9 @@ async function loadSheetData() {
     }
     if (rowNum >= 18 && rowNum <= 29) {
       const label = QTY_LABELS[rowNum - 18];
-      const val = jq[ADMIN_ROW_TO_FIELD[rowNum]] || 0;
-      return `<td></td><td>${label}</td><td>${val}</td><td>EA</td>`;
+      const field = ADMIN_ROW_TO_FIELD[rowNum];
+      const val = jq[field] || 0;
+      return `<td></td><td>${label}</td><td>${val} ${jqEditBtn(field, label, val)}</td><td>EA</td>`;
     }
     return '<td></td><td></td><td></td><td></td>';
   }
