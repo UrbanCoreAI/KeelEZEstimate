@@ -106,7 +106,7 @@
   </div>
 
   <div id="preview-banner" style="display:none;background:#fff8e1;border-bottom:2px solid #f9ab00;padding:8px 14px;font-size:12px;align-items:center;justify-content:space-between;gap:10px;">
-    <div><strong>🔍 PREVIEWING IMPORT</strong> — <span id="preview-banner-summary">loading…</span> Switch tabs above to review each one. Click a yellow cell to skip it, a green cell to bring it back.</div>
+    <div><strong>🔍 PREVIEWING IMPORT</strong> — <span id="preview-banner-summary">loading…</span> Switch tabs above to review each one. Click a yellow cell to skip it, a green cell to bring it back. Formula cells (Custom Plan Quantity/Unit Cost) show their computed value — hold Shift while clicking/holding a cell to see its raw formula instead.</div>
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
         <input type="checkbox" id="preview-skip-issues-chk" onchange="setSkipFormatIssues(this.checked)"> Skip cells that look wrong
@@ -839,32 +839,37 @@ async function loadSheetData() {
     let unitCost = 0;
     let unitFormulaStr = '';
 
-    if (activeTab === '2026 CUSTOM PLAN') {
-      // 2026 CUSTOM PLAN's unit cost is computed by literally parsing which
-      // houses r.unit_cost_formula's AVERAGE(...) actually lists — e.g.
-      // "=AVERAGE('2026 MASTER PLAN KIAWAH'!F20, ...)" — and averaging only
-      // those. This used to instead average every house_rates row flagged
-      // include_in_average=true, which meant a brand-new house (Coronado)
-      // silently joined every average the moment it had any rate at all,
-      // even though the Sheet's own formula was written before that house
-      // existed and never lists it. Whatever the imported formula says to
-      // average is exactly what gets averaged now — nothing added or
-      // dropped beyond what's literally written in it.
-      const houseRefRe = /'([^']+)'!F\d+/g;
-      const matchedHouseKeys = [];
+    // 2026 CUSTOM PLAN's unit cost is computed by literally parsing which
+    // houses a unit_cost_formula's AVERAGE(...) actually lists — e.g.
+    // "=AVERAGE('2026 MASTER PLAN KIAWAH'!F20, ...)" — and averaging only
+    // those. This used to instead average every house_rates row flagged
+    // include_in_average=true, which meant a brand-new house (Coronado)
+    // silently joined every average the moment it had any rate at all,
+    // even though the Sheet's own formula was written before that house
+    // existed and never lists it. Whatever a formula says to average is
+    // exactly what gets averaged — nothing added or dropped beyond what's
+    // literally written in it. Factored into a function (not inlined) so
+    // the Import Preview overlay below can reuse it to show what a NEW
+    // unit_cost_formula from the Sheet would actually average to, instead
+    // of just dumping the raw formula text into a yellow cell.
+    const houseRefRe = /'([^']+)'!F\d+/g;
+    function unitCostFromFormula(formulaStr) {
+      const keys = [];
       let hm;
       houseRefRe.lastIndex = 0;
-      while ((hm = houseRefRe.exec(r.unit_cost_formula || '')) !== null) {
+      while ((hm = houseRefRe.exec(formulaStr || '')) !== null) {
         const house = ALL_HOUSES.find(h => houseTabName(h) === hm[1]);
-        if (house) matchedHouseKeys.push(house.key);
+        if (house) keys.push(house.key);
       }
       // A house listed in the formula but with no house_rates row at all
       // yet (rate never entered) is skipped — nothing to average for it.
-      const matchedRates = matchedHouseKeys
-        .map(key => (r.house_rates || []).find(h => h.house === key))
-        .filter(Boolean);
-      const unitCosts = matchedRates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
-      unitCost = unitCosts.length ? (unitCosts.reduce((s, v) => s + v, 0) / unitCosts.length) : 0;
+      const rates = keys.map(key => (r.house_rates || []).find(h => h.house === key)).filter(Boolean);
+      const costs = rates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
+      return costs.length ? (costs.reduce((s, v) => s + v, 0) / costs.length) : 0;
+    }
+
+    if (activeTab === '2026 CUSTOM PLAN') {
+      unitCost = unitCostFromFormula(r.unit_cost_formula);
       qtyVal = evaluateQuantityFormula(r.quantity_formula, jq);
       amtVal = unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
@@ -896,22 +901,35 @@ async function loadSheetData() {
     const dDiff = cellDiffByRef['D' + currRow];
     const eDiff = cellDiffByRef['E' + currRow];
     const fDiff = cellDiffByRef['F' + currRow];
-    const dHtml = dDiff ? importCellHtml(dDiff) : `
+    const isCustomTab = activeTab === '2026 CUSTOM PLAN';
+    // Custom Plan's D (quantity_formula) and F (unit_cost_formula) diffs
+    // carry raw formula TEXT (see buildRowsForTab), unlike every other
+    // diffed cell which already holds a plain number — showing that raw
+    // formula in a yellow cell looked out of place next to computed
+    // values everywhere else. importFormulaCellHtml shows the computed
+    // value by default (same kind of number the non-preview cell above
+    // would show) and only reveals the underlying formula text on
+    // Shift+click/hold — see its onmousedown/onmouseup.
+    const dHtml = dDiff
+      ? (isCustomTab ? importFormulaCellHtml(dDiff, String(qtyVal), String(evaluateQuantityFormula(dDiff.next, jq))) : importCellHtml(dDiff))
+      : `
         ${qtyVal}
-        <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\\'")}', '${safeQtyF}')">✏️</button>
+        <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\'")}', '${safeQtyF}')">✏️</button>
       `;
     const eHtml = eDiff ? importCellHtml(eDiff) : `
         ${formattedAmt}
         ${activeTab === '2026 CUSTOM PLAN'
           ? `<button class="pencil-btn" title="Edit Amount Formula" onclick="openEditModal('cost_items', ${r.id}, 'amount_formula', '${safeName}', 'Amount Formula', '${safeAmtF}', '${safeAmtF}')">✏️</button>`
-          : (houseRate ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('house_rates', ${houseRate.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\\'")}', '${amtVal}')">✏️</button>` : '')
+          : (houseRate ? `<button class="pencil-btn" title="Edit Amount" onclick="openEditModal('house_rates', ${houseRate.id}, 'amount', '${safeName}', 'Amount ($)', '${amtFormulaStr.replace(/'/g, "\'")}', '${amtVal}')">✏️</button>` : '')
         }
       `;
-    const fHtml = fDiff ? importCellHtml(fDiff) : `
+    const fHtml = fDiff
+      ? (isCustomTab ? importFormulaCellHtml(fDiff, '$' + unitCost.toFixed(2), '$' + unitCostFromFormula(fDiff.next).toFixed(2)) : importCellHtml(fDiff))
+      : `
         ${formattedUnitCost}
         ${activeTab === '2026 CUSTOM PLAN'
           ? `<button class="pencil-btn" title="Edit Unit Cost Formula" onclick="openEditModal('cost_items', ${r.id}, 'unit_cost_formula', '${safeName}', 'Unit Cost Formula', '${safeUnitF}', '${safeUnitF}')">✏️</button>`
-          : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
+          : (houseRate ? `<button class="pencil-btn" title="Edit Unit Cost" onclick="document.getElementById('modal-formula-val').dataset.qty='${qtyVal}'; openEditModal('house_rates', ${houseRate.id}, 'unit_cost', '${safeName}', 'Unit Cost ($)', '${unitFormulaStr.replace(/'/g, "\'")}', '${unitCost.toFixed(2)}')">✏️</button>` : '')
         }
         ${(activeTab !== '2026 CUSTOM PLAN' && houseRate) ? `
         <label title="Count this house toward the Custom Plan average unit cost for this item" style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#5f6368;margin-left:4px;cursor:pointer;">
@@ -1791,7 +1809,11 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
 function isRowReverted(r) {
   return !!(importPreview && importPreview.revertedKeys && importPreview.revertedKeys.has(r._idx));
 }
-function toggleImportCell(idx) {
+function toggleImportCell(event, idx) {
+  // Shift+click/hold is a peek at a formula cell's raw formula (see
+  // importFormulaCellHtml's onmousedown/onmouseup) — it should never also
+  // flip the cell's yellow/green import state.
+  if (event && event.shiftKey) return;
   if (!importPreview.revertedKeys) importPreview.revertedKeys = new Set();
   if (importPreview.revertedKeys.has(idx)) importPreview.revertedKeys.delete(idx);
   else importPreview.revertedKeys.add(idx);
@@ -1805,7 +1827,29 @@ function importCellHtml(diffRow) {
   const title = reverted
     ? 'Currently in the database — click to import the Sheet\'s new value instead'
     : 'Sheet\'s new value — click to keep the current database value (won\'t be imported)';
-  return `<span onclick="toggleImportCell(${diffRow._idx})" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${showVal}</span>`;
+  return `<span onclick="toggleImportCell(event, ${diffRow._idx})" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${showVal}</span>`;
+}
+// Same yellow/green toggle as importCellHtml, but for a cell whose
+// underlying diff (diffRow.current/.next) is raw FORMULA TEXT rather than
+// a plain value (Custom Plan's Quantity/Unit Cost formulas — see
+// buildRowsForTab). currentDisplay/nextDisplay are the already-computed,
+// human-looking numbers to show by default (matching every other cell);
+// the raw formula only appears while Shift is held down over the cell
+// (mousedown swaps to it, mouseup/mouseleave swaps back) so the grid
+// reads as values everywhere unless someone specifically asks to check
+// the formula behind one.
+function importFormulaCellHtml(diffRow, currentDisplay, nextDisplay) {
+  if (!diffRow) return '';
+  const reverted = isRowReverted(diffRow);
+  const showVal = reverted ? currentDisplay : nextDisplay;
+  const rawFormula = reverted ? (diffRow.current || '(no formula)') : (diffRow.next || '(no formula)');
+  const bg = reverted ? '#ceead6' : '#fff2b2';
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const title = (reverted
+    ? 'Currently in the database — click to import the Sheet\'s new value instead.'
+    : 'Sheet\'s new value — click to keep the current database value (won\'t be imported).') +
+    ' Hold Shift while clicking/holding to see the raw formula instead of the value.';
+  return `<span onclick="toggleImportCell(event, ${diffRow._idx})" data-value="${esc(showVal)}" data-formula="${esc(rawFormula)}" onmousedown="if(event.shiftKey){this.textContent=this.dataset.formula;}" onmouseup="this.textContent=this.dataset.value;" onmouseleave="this.textContent=this.dataset.value;" title="${title}" style="cursor:pointer;background:${bg};padding:2px 5px;border-radius:3px;display:inline-block;">${esc(showVal)}</span>`;
 }
 // Called once tab(s) are selected and rows are loaded — instead of a
 // modal diff list, this switches to the first previewed tab and lets
