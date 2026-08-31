@@ -1458,11 +1458,21 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   const rows = [];
   let tabInfo = null;
 
+  // Shared by the 'custom' and 'house' branches below — an item is one of
+  // the 9 "Total ..." Base House Pricing rows (see
+  // supabase-migrations/12_total_house_pricing_items.sql) if its
+  // quantity_formula is the sentinel 'sheet_total_row'. These only exist
+  // on HOUSE tabs (each house's own BuilderTrend breakout) — the Custom
+  // Plan tab has no such rows at all, so it must skip them too, exactly
+  // like the house branch does, or they show up as "not found" there.
+  function isTotalRowItem(item) { return item.quantity_formula === 'sheet_total_row'; }
+
   if (classified.type === 'custom') {
     const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
     const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${CUSTOM_TAB}'!B3:F250`]);
     tabInfo = { type: 'custom', sheetRows };
     (costItems || []).forEach(item => {
+      if (isTotalRowItem(item)) return; // house-tab-only rows — Custom Plan has no such rows to match
       const rowIdx = findRowByName(sheetRows, item.item_name);
       if (rowIdx === -1) { pushMissingRow(rows, item.item_name, 'cost_items', item.id, item.quantity_formula, null, sheetRows.map(r => r[0])); return; }
       const rowNum = rowIdx + 3;
@@ -1533,7 +1543,6 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // other item is matched on above. Read as UNFORMATTED_VALUE (not
     // sheetsGet's FORMULA mode) so a computed SUM()-style cell comes back
     // as its actual number.
-    function isTotalRowItem(item) { return item.quantity_formula === 'sheet_total_row'; }
     let totalRowVals = [];
     try {
       const trRes = await fetch(
