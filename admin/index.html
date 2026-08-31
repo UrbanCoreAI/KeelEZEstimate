@@ -1481,6 +1481,48 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     const [sheetRows, refRows] = await sheetsGet(token, spreadsheetId, [`'${tabName}'!B3:E250`, `'${tabName}'!H1:J40`]);
     tabInfo = { type: 'house', house: classified.house, sheetRows };
 
+    // "Total ..." line items (Base House Pricing section) are laid out
+    // differently from every other cost item: name (merged A:D) + unit
+    // cost (F) share one row, with the quantity/sq-ft amount on the row
+    // directly ABOVE (D). "Total Fixed Cost" is the one exception: a
+    // single row with the value in merged E:F, no separate quantity row.
+    // These never existed as cost_items rows before — see
+    // supabase-migrations/12_total_house_pricing_items.sql — so nothing
+    // could ever read them via Import from Sheet. Matched here by fixed
+    // row number, not name text, since the Sheets API only returns a
+    // merged cell's text in the merge's top-left cell (column A), which
+    // sits outside the B:E range every other item is matched on above.
+    // Read as UNFORMATTED_VALUE (not sheetsGet's FORMULA mode) so a
+    // computed SUM()-style cell comes back as its actual number.
+    const TOTAL_ROW_ITEMS = [
+      { name: 'Total Fixed Cost', nameRow: 26, isFixed: true },
+      { name: 'Total Finished SF & Unfinished (Under Roof)', nameRow: 31, qtyRow: 30 },
+      { name: 'Total Finished SF & Unfinished SF (Under Roof Excluding Porches)', nameRow: 34, qtyRow: 33 },
+      { name: 'Total Finished SF', nameRow: 48, qtyRow: 47 },
+      { name: 'Total 1st Floor, Garage & Porch SF', nameRow: 52, qtyRow: 51 },
+      { name: 'Total 1st Floor Finished, 1st Floor Unfinished & Garage', nameRow: 58, qtyRow: 57 },
+      { name: 'Total Finished 1st Floor SF', nameRow: 61, qtyRow: 60 },
+      { name: 'Total Garage SF', nameRow: 64, qtyRow: 63 },
+      { name: 'Total for Decks & Porches', nameRow: 79, qtyRow: 78 }
+    ];
+    const TOTAL_ROW_NAME_SET = new Set(TOTAL_ROW_ITEMS.map(t => t.name));
+    let totalRowVals = [];
+    try {
+      const trRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent("'" + tabName + "'!D1:F100")}?valueRenderOption=UNFORMATTED_VALUE`,
+        { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } }
+      );
+      const trBody = await trRes.json();
+      if (!trRes.ok) console.warn('[Keel] Total-row (D:F) fetch failed for ' + tabName + ':', JSON.stringify(trBody));
+      if (trRes.ok) totalRowVals = trBody.values || [];
+    } catch (e) { console.warn('[Keel] could not read Total-row (D:F) values for ' + tabName + ':', e.message); }
+    // col: 0 = D, 1 = E, 2 = F
+    function totalCell(rowNum, col) {
+      const row = totalRowVals[rowNum - 1] || [];
+      const v = row[col];
+      return (v === undefined || v === null) ? '' : v;
+    }
+
     // Some house tabs (Coronado) write Quantity (D) / Amount (E) as live
     // formulas referencing this same tab's own I-column area/count block
     // (e.g. "=I4+I5"), instead of a plain typed-in number like the older
@@ -1527,6 +1569,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     }
 
     (costItems || []).forEach(item => {
+      if (TOTAL_ROW_NAME_SET.has(item.item_name)) return; // handled separately below (two-row "Total ..." layout)
       const hr = rateByItemId[item.id];
       const rowIdx = findRowByName(sheetRows, item.item_name);
       if (rowIdx === -1) { pushMissingRow(rows, item.item_name + ' — Amount', 'house_rates', hr ? hr.id : null, hr ? hr.amount : 0, null, sheetRows.map(r => r[0]), item.id); return; }
@@ -1555,6 +1598,39 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       }
       pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'E' + (rowIdx + 3));
       pushRowIfChanged(rows, item.item_name + ' — Quantity', 'house_rates', hr.id, 'quantity', hr.quantity, sheetQtyRaw, validateNumericCell(sheetQtyRaw, hr.quantity), true, 'D' + (rowIdx + 3));
+    });
+
+    // The 9 "Total ..." items (see TOTAL_ROW_ITEMS above) — computes a
+    // dollar "amount" (quantity × unit cost) the exact same way every
+    // other cost item's Amount column already works, so
+    // fetchUnitCostsFromSupabase() (amount / quantity) reconstructs the
+    // Sheet's real unit-cost value with no changes needed there.
+    TOTAL_ROW_ITEMS.forEach(t => {
+      const item = (costItems || []).find(ci => ci.item_name === t.name);
+      if (!item) { console.warn('[Keel] cost_items row for "' + t.name + '" not found — run supabase-migrations/12_total_house_pricing_items.sql first'); return; }
+      const hr = rateByItemId[item.id];
+      let qtyRaw = 0, unitRaw = 0;
+      if (t.isFixed) {
+        unitRaw = Number(totalCell(t.nameRow, 1)) || Number(totalCell(t.nameRow, 2)) || 0; // merged E:F
+      } else {
+        qtyRaw = Number(totalCell(t.qtyRow, 0)) || 0; // D, row above
+        unitRaw = Number(totalCell(t.nameRow, 2)) || 0; // F, name row
+      }
+      const amountRaw = t.isFixed ? unitRaw : (qtyRaw * unitRaw);
+      const sheetAmtRaw = String(amountRaw);
+      const sheetQtyRaw = String(qtyRaw);
+      if (!hr) {
+        pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', null, 'amount', 0, sheetAmtRaw, validateNumericCell(sheetAmtRaw, 0), true, 'F' + t.nameRow);
+        const pushed = rows[rows.length - 1];
+        pushed.costItemId = item.id;
+        pushed.house = classified.house;
+        pushed.newQuantity = qtyRaw;
+        return;
+      }
+      pushRowIfChanged(rows, item.item_name + ' — Amount', 'house_rates', hr.id, 'amount', hr.amount, sheetAmtRaw, validateNumericCell(sheetAmtRaw, hr.amount), true, 'F' + t.nameRow);
+      if (!t.isFixed) {
+        pushRowIfChanged(rows, item.item_name + ' — Quantity', 'house_rates', hr.id, 'quantity', hr.quantity, sheetQtyRaw, validateNumericCell(sheetQtyRaw, hr.quantity), true, 'D' + t.qtyRow);
+      }
     });
 
     // Reference measurements ("Seed Reference Houses") — the raw
