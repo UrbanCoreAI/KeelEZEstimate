@@ -1959,7 +1959,13 @@ const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
   'Countertop Allowance': 'Counterop Allowance',
   'Hardwood Flooring Allowance': 'Hardwood Allowance',
   'Tile Allowance': 'Tile Selection Allowance',
-  'Garage Door': 'Garage Overhead Doors'
+  'Garage Door': 'Garage Overhead Doors',
+  // Realtor Fees no longer types (grand total, BuilderTrend's own baked-in
+  // 0.35 quantity) -- it now reads its Unit Cost straight from the
+  // SALES TO EDIT - REALTOR cost_items row/house_rates, same as every
+  // other item. Its Quantity ("SF of Finished Areas") reuses the same
+  // D46 value 'Total Finished SF' already computes below.
+  'Realtor Fees': 'SALES TO EDIT - REALTOR'
 };
 
 async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
@@ -2224,6 +2230,7 @@ btnConfirm.addEventListener('click', async () => {
       { name: 'Driveway Allowance', qty: 1 },
       { name: 'Landscaping Allowance', qty: n(c['D99']) },
       { name: 'Tap Fees', qty: 1 },
+      { name: 'Realtor Fees', qty: n(c['D46']) }, // SF of Finished Areas -- same basis as 'Total Finished SF'; Unit Cost comes from SALES TO EDIT - REALTOR below
     ];
     if (lender) items.push({ name: 'Preferred Lender Incentive', qty: 1 });
 
@@ -2664,10 +2671,13 @@ function buildAutomationScript(items, customItems) {
   console.log('EZEstimate — starting Write to Estimate (' + items.length + ' items)');
   for (var i = 0; i < items.length; i++) await setQty(items[i].name, items[i].qty, items[i].isUnitCost);
   await _delay(1500);
-  var fs = document.querySelector('.BTGridFooterCell--ellipsis span[dir="ltr"]'), tv = 0;
-  if (fs) { var fm = (fs.innerText||'').trim().match(/^\\$([\\d,]+\\.?\\d*)$/); if (fm) tv = parseFloat(fm[1].replace(/,/g,'')); }
-  if (tv > 0) { console.log('Grand total: $'+tv+' → Realtor Fees'); await setQty('Realtor Fees', tv, true); }
-  else console.warn('Could not detect grand total for Realtor Fees');
+  var realtorItem = items.find(function(it) { return it.name === 'Realtor Fees'; });
+  if (realtorItem && realtorItem.unitCost !== undefined && realtorItem.unitCost !== null) {
+    await setQty('Realtor Fees', realtorItem.unitCost, true);
+    console.log('Realtor Fees unit cost → $' + realtorItem.unitCost + ' (from SALES TO EDIT - REALTOR)');
+  } else {
+    console.warn('Realtor Fees unit cost unavailable (no matching cost_items/house_rates row) — left untouched');
+  }
   if (customItems.length) {
     console.log('Creating ' + customItems.length + ' custom allowance item(s)…');
     for (var ci = 0; ci < customItems.length; ci++) await createLineItem(customItems[ci].name, customItems[ci].unitCost);
