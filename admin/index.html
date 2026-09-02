@@ -864,19 +864,22 @@ async function loadSheetData() {
     function unitCostFromFormula(formulaStr, forItem) {
       const item = forItem || r;
       const f = (formulaStr || '').trim();
-      // "=ITEMSUM(Name One|Name Two|...)" -- one of the 9 Total items'
+      // "=ITEMSUM(Name One|Name Two|...)" -- one of the Total items'
       // same-tab SUM(F#:F#) formula, pre-resolved to item NAMES at import
       // time (see convertSameTabSumFormula) since raw Sheet row numbers
-      // mean nothing here. Sums each named item's own live unit cost,
-      // recursively -- safe because these 9 Total items never reference
-      // each other, only individual line items below them.
+      // mean nothing here. Sums each named item's own live unit cost --
+      // EXCEPT a name that's itself another Total row (TOTAL AMOUNT's own
+      // formula references 13 other Total rows, not line items), which
+      // needs its real Amount instead (see totalRowAmount) since a Total
+      // row's own "unit cost" concept doesn't apply to summing totals.
       const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
       if (itemSumMatch) {
         const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
         let total = 0;
         names.forEach(nm => {
           const refItem = itemByName[nm.toLowerCase()];
-          if (refItem) total += unitCostFromFormula(refItem.unit_cost_formula, refItem);
+          if (!refItem) return;
+          total += isTotalRowItem(refItem) ? totalRowAmount(refItem) : unitCostFromFormula(refItem.unit_cost_formula, refItem);
         });
         return total;
       }
@@ -905,7 +908,11 @@ async function loadSheetData() {
     // quantity times its own unit cost) rather than reusing unitCost *
     // qtyVal of the Total row itself, since that's what the Sheet
     // actually computes and the two can legitimately differ when the
-    // underlying items don't share one common quantity.
+    // underlying items don't share one common quantity. Same Total-row
+    // exception as unitCostFromFormula above -- a referenced name that's
+    // itself a Total row uses its own real Amount via totalRowAmount,
+    // not quantity x unit cost (a Total row's own "quantity" is the row-
+    // above's area formula, unrelated to what it should contribute here).
     function amountFromFormula(formulaStr, forItem, debugLabel) {
       const item = forItem || r;
       const f = (formulaStr || '').trim();
@@ -919,16 +926,30 @@ async function loadSheetData() {
             if (debugLabel) console.warn('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" has no matching cost_items row -- excluded from the sum');
             return;
           }
-          const refQty = refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq);
-          const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
-          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + (refQty * refUnit).toFixed(2));
-          total += refQty * refUnit;
+          let contribution;
+          if (isTotalRowItem(refItem)) {
+            contribution = totalRowAmount(refItem);
+            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (sub-total) = ' + contribution.toFixed(2));
+          } else {
+            const refQty = refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq);
+            const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
+            contribution = refQty * refUnit;
+            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + contribution.toFixed(2));
+          }
+          total += contribution;
         });
         if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL = ' + total.toFixed(2));
         return total;
       }
       const n = Number(f);
       return isFinite(n) ? n : 0;
+    }
+    // The real, current Amount of ANY Total row, fixed or not -- shared by
+    // both functions above so a Total-of-Totals reference (TOTAL AMOUNT)
+    // always gets the same number this row's own display would show,
+    // rather than re-deriving it a different (wrong) way.
+    function totalRowAmount(totalItem) {
+      return totalItem.is_fixed ? unitCostFromFormula(totalItem.unit_cost_formula, totalItem) : amountFromFormula(totalItem.amount_formula, totalItem);
     }
 
     if (activeTab === '2026 CUSTOM PLAN') {
@@ -1166,9 +1187,30 @@ const TOTAL_ROW_SHEET_LABELS = {
   'Total 1st Floor Finished, 1st Floor Unfinished & Garage': 'TOTAL FOR 1ST FLOOR FINISHED, 1ST FLOOR UNFINISHED & GARAGE',
   'Total Finished 1st Floor SF': 'TOTAL FOR 1ST FLOOR ONLY',
   'Total Garage SF': 'TOTAL FOR GARAGE',
-  'Total for Decks & Porches': 'TOTAL FOR DECKS & PORCHES'
+  'Total for Decks & Porches': 'TOTAL FOR DECKS & PORCHES',
+  // Added so TOTAL AMOUNT (below) has something to sum -- these 4 sections
+  // already exist on every tab with their own same-tab SUM formula, just
+  // like the 9 above, but were never individually tracked before nothing
+  // needed their own subtotal.
+  'Total for Individual Items': 'TOTAL FOR INDIVIDUAL ITEMS',
+  'Total for Sales': 'TOTAL FOR SALES',
+  'Total for Selection Allowances': 'TOTAL FOR SELECTION ALLOWANCES',
+  'Total for Site Allowances': 'TOTAL FOR SITE ALLOWANCES',
+  // The grand total -- sums the Amount of the 13 Total rows above it
+  // (itself included in that list only via ITS OWN formula referencing
+  // them, never the reverse). Single merged value like Total Fixed Cost
+  // (no separate quantity/unit cost), so it's_fixed too.
+  'Total Amount': 'TOTAL AMOUNT'
 };
 function isTotalRowItem(item) { return !!(item && TOTAL_ROW_SHEET_LABELS[item.item_name]); }
+// Reverse of the map above (Sheet's own label text -> our DB item_name),
+// lowercased for lookup -- needed because a same-tab SUM formula that
+// references another TOTAL row (TOTAL AMOUNT's own formula does this,
+// summing 13 other Total rows' E cells) finds that row's name in COLUMN A
+// (the merge's top-left cell), not column B where every regular line
+// item's name lives -- see nameAtRow() in buildRowsForTab.
+const SHEET_LABEL_TO_ITEM_NAME = {};
+Object.keys(TOTAL_ROW_SHEET_LABELS).forEach(k => { SHEET_LABEL_TO_ITEM_NAME[TOTAL_ROW_SHEET_LABELS[k].toLowerCase()] = k; });
 
 // The Custom Plan tab's BUILDING AREA (I3:I13) / QUANTITIES (I18:I29) block,
 // by position within each fetched range, mapped to job_quantities' column
@@ -1689,8 +1731,34 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // name instead of row position. A formula that's already a
     // cross-house AVERAGE (some of these rows' F column uses that
     // instead) is left untouched — that form already works today.
+    // A referenced row is either a regular line item (its name lives in
+    // column B, part of the same B3:F250 fetch as sheetRows) or another
+    // TOTAL row (its name lives in column A instead -- the merge's
+    // top-left cell -- read from the separate customTotalLabels fetch
+    // above). TOTAL AMOUNT's own formula references 13 OTHER Total rows,
+    // so it needs the column-A case; every other Total row's formula
+    // still only ever references regular line items in column B. A
+    // column-A hit is translated from the Sheet's raw label text back to
+    // OUR db item_name (via SHEET_LABEL_TO_ITEM_NAME) so downstream
+    // itemByName lookups find it the same way every other name here does.
+    function nameAtRow(rn) {
+      const aVal = (customTotalLabels[rn - 1] && customTotalLabels[rn - 1][0]) ? String(customTotalLabels[rn - 1][0]).trim() : '';
+      if (aVal) return SHEET_LABEL_TO_ITEM_NAME[aVal.toLowerCase()] || aVal;
+      return (sheetRows[rn - 3] && sheetRows[rn - 3][0]) ? String(sheetRows[rn - 3][0]).trim() : '';
+    }
     function convertSameTabSumFormula(formulaStr, totalRowNum) {
       const f = (formulaStr || '').trim();
+      // TOTAL AMOUNT's own formula: "=SUM(E102+E96+E85+...)" -- an
+      // explicit "+"-joined list of individual, non-contiguous cells (13
+      // other Total rows' own Amount cells), not a contiguous line-item
+      // range. Resolved by name same as everything else here, but with no
+      // auto-extend below -- this list is a deliberately hand-picked set
+      // of totals, not a type-run that should grow on its own.
+      const plusMatch = /^=sum\(((?:[a-z]\d+\s*\+\s*)+[a-z]\d+)\)$/i.exec(f);
+      if (plusMatch) {
+        const names = plusMatch[1].split('+').map(part => nameAtRow(parseInt(part.trim().slice(1), 10))).filter(Boolean).map(nm => nm.replace(/\|/g, ''));
+        return names.length ? ('=ITEMSUM(' + names.join('|') + ')') : f;
+      }
       const m = /^=sum\([a-z](\d+)(?::[a-z](\d+))?\)$/i.exec(f);
       if (!m) return f;
       const startRow = parseInt(m[1], 10);
@@ -1720,7 +1788,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       }
       const names = [];
       for (let rn2 = startRow; rn2 <= endRow; rn2++) {
-        const nm = (sheetRows[rn2 - 3] && sheetRows[rn2 - 3][0]) ? String(sheetRows[rn2 - 3][0]).trim() : '';
+        const nm = nameAtRow(rn2);
         if (nm) names.push(nm.replace(/\|/g, ''));
       }
       return names.length ? ('=ITEMSUM(' + names.join('|') + ')') : f;
@@ -1759,9 +1827,14 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const rowIdx = nameRow - 3; // sheetRows[0] = row 3 (B3:F250)
       const rowVals = sheetRows[rowIdx] || [];
       if (item.is_fixed) {
-        const rawUnit = (rowVals[3] || '').toString(); // E (value lives here for the fixed-cost row, F is blank)
+        // Total Fixed Cost's value always lives in E (F is blank). TOTAL
+        // AMOUNT is the same single-merged-value shape but its own
+        // formula could as easily end up typed into F depending on how
+        // it was pasted in -- fall back to F if E is empty so either
+        // placement works.
+        const rawUnit = (rowVals[3] || rowVals[4] || '').toString();
         const sheetUnit = convertSameTabSumFormula(rawUnit, nameRow);
-        console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', E=' + JSON.stringify(rawUnit) + ' -> ' + JSON.stringify(sheetUnit));
+        console.log('[Keel][CustomTotal] "' + item.item_name + '" -> "' + sheetLabel + '" @ row ' + nameRow + ', E/F=' + JSON.stringify(rawUnit) + ' -> ' + JSON.stringify(sheetUnit));
         pushRowIfChanged(rows, item.item_name + ' — Unit Cost Formula', 'cost_items', item.id, 'unit_cost_formula', item.unit_cost_formula, sheetUnit, { valid: true }, false, 'E' + nameRow);
       } else {
         const qtyRowVals = sheetRows[rowIdx - 1] || [];
