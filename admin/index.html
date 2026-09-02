@@ -864,26 +864,51 @@ async function loadSheetData() {
     // unit_cost_formula from the Sheet would actually average to, instead
     // of just dumping the raw formula text into a yellow cell.
     const houseRefRe = /'([^']+)'!F\d+/g;
-    function unitCostFromFormula(formulaStr, forItem) {
+    function unitCostFromFormula(formulaStr, forItem, debugLabel) {
       const item = forItem || r;
       const f = (formulaStr || '').trim();
       // "=ITEMSUM(Name One|Name Two|...)" -- one of the Total items'
       // same-tab SUM(F#:F#) formula, pre-resolved to item NAMES at import
       // time (see convertSameTabSumFormula) since raw Sheet row numbers
-      // mean nothing here. Sums each named item's own live unit cost --
-      // EXCEPT a name that's itself another Total row (TOTAL AMOUNT's own
-      // formula references 13 other Total rows, not line items), which
-      // needs its real Amount instead (see totalRowAmount) since a Total
-      // row's own "unit cost" concept doesn't apply to summing totals.
+      // mean nothing here. A referenced name that's itself another Total
+      // row (TOTAL AMOUNT's own formula references 13 other Total rows)
+      // needs its real Amount instead (see totalRowAmount), and a fixed
+      // (qty-less) referenced item's "unit cost" IS its whole dollar
+      // value. But a referenced REGULAR (non-fixed) line item -- e.g.
+      // "Total for Individual Items" summing 9 ordinary line items with
+      // real quantities -- has a per-unit cost that means nothing on its
+      // own; it must be multiplied by that item's own quantity to get the
+      // dollar amount the Sheet's =SUM(E...) is actually adding up.
+      // Getting this wrong (using raw unit cost, unscaled) was the bug
+      // that made Total for Individual Items/Sales/Selection Allowances/
+      // Site Allowances all compute to the wrong dollar total even though
+      // every individual item's own displayed Amount was correct.
       const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
       if (itemSumMatch) {
         const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
         let total = 0;
         names.forEach(nm => {
           const refItem = itemByName[nm.toLowerCase()];
-          if (!refItem) return;
-          total += isTotalRowItem(refItem) ? totalRowAmount(refItem) : unitCostFromFormula(refItem.unit_cost_formula, refItem);
+          if (!refItem) {
+            if (debugLabel) console.warn('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" has no matching cost_items row -- excluded from the sum');
+            return;
+          }
+          let contribution;
+          if (isTotalRowItem(refItem)) {
+            contribution = totalRowAmount(refItem);
+            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (sub-total) = ' + contribution.toFixed(2));
+          } else if (refItem.is_fixed) {
+            contribution = unitCostFromFormula(refItem.unit_cost_formula, refItem);
+            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (fixed) = ' + contribution.toFixed(2));
+          } else {
+            const refQty = evaluateQuantityFormula(refItem.quantity_formula, jq);
+            const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
+            contribution = refQty * refUnit;
+            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + contribution.toFixed(2));
+          }
+          total += contribution;
         });
+        if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL = ' + total.toFixed(2));
         return total;
       }
       // Every regular Custom Plan item's unit_cost_formula: an AVERAGE
@@ -956,7 +981,7 @@ async function loadSheetData() {
     }
 
     if (activeTab === '2026 CUSTOM PLAN') {
-      unitCost = unitCostFromFormula(r.unit_cost_formula);
+      unitCost = unitCostFromFormula(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined);
       // A Fixed Cost item (is_fixed) is a lump sum by definition -- the
       // Sheet itself has no real quantity for these (blank D column on
       // "TOTAL FIXED COST", and every regular Fixed Cost line just uses a
