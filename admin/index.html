@@ -1088,6 +1088,12 @@ async function loadSheetData() {
 // log, not an editable settings table like the tabs above.
 const TAKEOFF_HISTORY_COLS = [
   { key: 'created_at',         label: 'Date',                fmt: v => new Date(v).toLocaleString() },
+  { key: 'user_email',         label: 'Signed In As',        fmt: v => v || '—' },
+  { key: 'source_plan',        label: 'Plan',                fmt: v => {
+      if (!v || v === 'CUSTOM') return 'CUSTOM';
+      const h = ALL_HOUSES.find(h => h.key === v);
+      return h ? h.label : v;
+    } },
   { key: 'basement_sf',        label: 'Basement SF' },
   { key: 'floor1_sf',          label: '1st Floor SF' },
   { key: 'floor2_sf',          label: '2nd Floor SF' },
