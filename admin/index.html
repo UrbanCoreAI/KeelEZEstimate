@@ -1232,7 +1232,7 @@ const TOTAL_ROW_SHEET_LABELS = {
   // (itself included in that list only via ITS OWN formula referencing
   // them, never the reverse). Single merged value like Total Fixed Cost
   // (no separate quantity/unit cost), so it's_fixed too.
-  'Total Amount': 'TOTAL AMOUNT'
+  'Total Amount': 'GRAND TOTAL'
 };
 function isTotalRowItem(item) { return !!(item && TOTAL_ROW_SHEET_LABELS[item.item_name]); }
 // Reverse of the map above (Sheet's own label text -> our DB item_name),
