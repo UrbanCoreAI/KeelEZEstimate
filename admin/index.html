@@ -1754,7 +1754,11 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       // range. Resolved by name same as everything else here, but with no
       // auto-extend below -- this list is a deliberately hand-picked set
       // of totals, not a type-run that should grow on its own.
-      const plusMatch = /^=sum\(((?:[a-z]\d+\s*\+\s*)+[a-z]\d+)\)$/i.exec(f);
+      // Matches either "=SUM(E26+E31+...)" or a bare "=E26+E31+..." with
+      // no SUM() wrapper at all -- Catalina's real TOTAL AMOUNT formula
+      // turned out to be the bare form, so both are accepted here rather
+      // than assuming which one every tab actually got pasted with.
+      const plusMatch = /^=(?:sum\()?((?:[a-z]\d+\s*\+\s*)+[a-z]\d+)\)?$/i.exec(f);
       if (plusMatch) {
         const names = plusMatch[1].split('+').map(part => nameAtRow(parseInt(part.trim().slice(1), 10))).filter(Boolean).map(nm => nm.replace(/\|/g, ''));
         return names.length ? ('=ITEMSUM(' + names.join('|') + ')') : f;
