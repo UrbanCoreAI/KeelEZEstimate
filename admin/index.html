@@ -1723,7 +1723,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
   let tabInfo = null;
 
   if (classified.type === 'custom') {
-    const { data: costItems } = await sb.from('cost_items').select('id,item_name,quantity_formula,amount_formula,unit_cost_formula');
+    const { data: costItems } = await sb.from('cost_items').select('id,item_name,is_fixed,quantity_formula,amount_formula,unit_cost_formula');
     const [sheetRows] = await sheetsGet(token, spreadsheetId, [`'${CUSTOM_TAB}'!B3:F250`]);
     tabInfo = { type: 'custom', sheetRows };
     // Column A on the Custom Plan tab holds the 9 Total items' names (the
