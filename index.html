@@ -2381,9 +2381,14 @@ btnConfirm.addEventListener('click', async () => {
     // Row numbers match SITE OPTIONS sheet rows for column C pricing lookup.
     const SITE_DROPDOWN_MAP = {
       'so-sewer': {
-        'City (No Septic)':    { row: 2,  parentGroup: '11 - Septic/Sewer',          title: 'Sewer - City (No Septic)' },
-        'Conventional Septic': { row: 3,  parentGroup: '11 - Septic/Sewer',          title: 'Sewer - Conventional Septic' },
-        'Engineered Septic':   { row: 4,  parentGroup: '11 - Septic/Sewer',          title: 'Sewer - Engineered Septic' },
+        // Real cost-code dropdown text is "11 - Septic / Sewer" (spaces
+        // around the slash) — confirmed via live DOM inspection. The old
+        // "11 - Septic/Sewer" (no spaces) never exact-matched, so
+        // createSiteItem's cost-code search silently fell through to its
+        // "09 - Lot Clearing/Site Prep" fallback instead.
+        'City (No Septic)':    { row: 2,  parentGroup: '11 - Septic / Sewer',          title: 'Sewer - City (No Septic)' },
+        'Conventional Septic': { row: 3,  parentGroup: '11 - Septic / Sewer',          title: 'Sewer - Conventional Septic' },
+        'Engineered Septic':   { row: 4,  parentGroup: '11 - Septic / Sewer',          title: 'Sewer - Engineered Septic' },
       },
       'so-water': {
         'Well':                { row: 6,  parentGroup: 'Well Allowance',              title: 'Water - Well' },
