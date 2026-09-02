@@ -1232,7 +1232,7 @@ const TOTAL_ROW_SHEET_LABELS = {
   // (itself included in that list only via ITS OWN formula referencing
   // them, never the reverse). Single merged value like Total Fixed Cost
   // (no separate quantity/unit cost), so it's_fixed too.
-  'Total Amount': 'GRAND TOTAL'
+  'Total Amount': 'TOTAL AMOUNT'
 };
 function isTotalRowItem(item) { return !!(item && TOTAL_ROW_SHEET_LABELS[item.item_name]); }
 // Reverse of the map above (Sheet's own label text -> our DB item_name),
@@ -1243,6 +1243,15 @@ function isTotalRowItem(item) { return !!(item && TOTAL_ROW_SHEET_LABELS[item.it
 // item's name lives -- see nameAtRow() in buildRowsForTab.
 const SHEET_LABEL_TO_ITEM_NAME = {};
 Object.keys(TOTAL_ROW_SHEET_LABELS).forEach(k => { SHEET_LABEL_TO_ITEM_NAME[TOTAL_ROW_SHEET_LABELS[k].toLowerCase()] = k; });
+// The Custom Plan tab spells this one row differently than every house
+// tab does ("GRAND TOTAL" vs "TOTAL AMOUNT" -- confirmed via Apps Script
+// dump of the live Sheet). TOTAL_ROW_SHEET_LABELS stays 'TOTAL AMOUNT'
+// (house tabs' real wording, used by findTotalRowByName below); this
+// override is consulted ONLY by the Custom Plan branch's
+// findCustomPlanRowByLabel lookup, so both tab types match their own
+// actual text instead of one shared string breaking the other.
+const CUSTOM_PLAN_LABEL_OVERRIDES = { 'Total Amount': 'GRAND TOTAL' };
+SHEET_LABEL_TO_ITEM_NAME['grand total'] = 'Total Amount';
 
 // The Custom Plan tab's BUILDING AREA (I3:I13) / QUANTITIES (I18:I29) block,
 // by position within each fetched range, mapped to job_quantities' column
@@ -1865,7 +1874,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // Total shares that same area/quantity formula, so the one directly
     // above is always representative.
     (costItems || []).filter(isTotalRowItem).forEach(item => {
-      const sheetLabel = TOTAL_ROW_SHEET_LABELS[item.item_name];
+      const sheetLabel = CUSTOM_PLAN_LABEL_OVERRIDES[item.item_name] || TOTAL_ROW_SHEET_LABELS[item.item_name];
       if (!sheetLabel) { console.warn('[Keel] no Sheet-label mapping for "' + item.item_name + '" — cannot locate it on ' + CUSTOM_TAB); return; }
       const nameRow = findCustomPlanRowByLabel(sheetLabel);
       if (!nameRow) { console.warn('[Keel] "' + sheetLabel + '" not found on ' + CUSTOM_TAB); return; }
