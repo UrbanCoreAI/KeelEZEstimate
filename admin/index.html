@@ -1774,8 +1774,17 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // OUR db item_name (via SHEET_LABEL_TO_ITEM_NAME) so downstream
     // itemByName lookups find it the same way every other name here does.
     function nameAtRow(rn) {
+      // Column A is NOT blank for a regular line item -- it holds that
+      // row's BuilderTrend cost code ("1", "80", etc.), not a name. Only
+      // a TOTAL row has a real label there. So column A only counts as a
+      // hit when it actually translates to a known Total row; anything
+      // else (a bare code, or blank) falls through to column B, which is
+      // where every regular item's real name lives. Getting this
+      // backwards was the bug that made Total Fixed Cost and friends sum
+      // cost codes like "1|2|3|...|80" instead of real item names.
       const aVal = (customTotalLabels[rn - 1] && customTotalLabels[rn - 1][0]) ? String(customTotalLabels[rn - 1][0]).trim() : '';
-      if (aVal) return SHEET_LABEL_TO_ITEM_NAME[aVal.toLowerCase()] || aVal;
+      const totalName = aVal ? SHEET_LABEL_TO_ITEM_NAME[aVal.toLowerCase()] : null;
+      if (totalName) return totalName;
       return (sheetRows[rn - 3] && sheetRows[rn - 3][0]) ? String(sheetRows[rn - 3][0]).trim() : '';
     }
     function convertSameTabSumFormula(formulaStr, totalRowNum) {
