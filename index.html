@@ -2297,10 +2297,14 @@ btnConfirm.addEventListener('click', async () => {
     // notifyItemNames below), and its name collected for the email
     // tabpicker.js sends after Realtor Fees.
     const notifyEstimator = $('chk-notify-estimator').checked;
+    // Each entry is { name, price } — price is what this item is CURRENTLY
+    // priced at on the estimate being written, so the notification email
+    // can show the estimator the number they're being asked to double-check,
+    // not just the item's name.
     const notifyItemNames = [];
-    function applyNotifyNote(name, desc, checked) {
+    function applyNotifyNote(name, desc, checked, price) {
       if (!notifyEstimator || !checked) return desc;
-      notifyItemNames.push(name);
+      notifyItemNames.push({ name: name, price: Number(price) || 0 });
       return desc ? (desc + ' Pricing is subject to change') : 'Pricing is subject to change';
     }
 
@@ -2324,7 +2328,7 @@ btnConfirm.addEventListener('click', async () => {
         customRowError = 'A Custom Selection Allowance row has a price but no name.';
         return;
       }
-      customItems.push({ name, description: applyNotifyNote(name, desc, notifyChecked), unitCost: price });
+      customItems.push({ name, description: applyNotifyNote(name, desc, notifyChecked, price), unitCost: price });
     });
 
     if (customRowError) {
@@ -2352,7 +2356,7 @@ btnConfirm.addEventListener('click', async () => {
       };
       const basementLineItems = computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows);
       basementLineItems.forEach(li => {
-        const desc = applyNotifyNote(li.name, basementDescByName[li.name] || '', basementNotifyCheckedByName[li.name]);
+        const desc = applyNotifyNote(li.name, basementDescByName[li.name] || '', basementNotifyCheckedByName[li.name], li.unitCost * li.quantity);
         customItems.push({ name: li.name, description: desc, unitCost: li.unitCost, quantity: li.quantity });
         console.log('[Basement line] ' + li.name + ' — $' + li.unitCost + ' × qty ' + li.quantity + ' = $' + (li.unitCost * li.quantity).toFixed(2));
       });
