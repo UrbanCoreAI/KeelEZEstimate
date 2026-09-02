@@ -399,7 +399,16 @@ function selectCell(cellRef, formulaOrVal) {
   document.getElementById('formula-bar-input').value = formulaOrVal;
 }
 
+// Bumped by every loadSheetData() call and captured as myToken below --
+// used so a call that's still awaiting a Supabase fetch can tell it's
+// been superseded by a newer call (e.g. sb.auth.onAuthStateChange firing
+// SIGNED_IN and then a second event right after, both racing to render
+// into the same tbody) and bail out instead of appending its own rows
+// on top of the newer call's, which is what was making the Custom Plan
+// tab (and every other tab) render its entire table twice in a row.
+let sheetDataLoadToken = 0;
 async function loadSheetData() {
+  const myToken = ++sheetDataLoadToken;
   // Import Preview (see enterPreviewMode) overlays yellow/green diff
   // cells directly onto whichever real tab is active — see cellDiffByRef
   // below — instead of a separate container, so a diff (or an error like
@@ -427,6 +436,7 @@ async function loadSheetData() {
 
   if (activeTab === 'SITE OPTIONS') {
     const { data } = await sb.from('site_options').select('*').order('sort_order');
+    if (myToken !== sheetDataLoadToken) return;
     if (!data) return;
     let rowIdx = 1;
     let trHdr = document.createElement('tr');
@@ -457,6 +467,7 @@ async function loadSheetData() {
 
   if (activeTab === 'NOTIFICATIONS') {
     const { data: notifyData } = await sb.from('notification_settings').select('*').eq('id', 1).single();
+    if (myToken !== sheetDataLoadToken) return;
     let rowIdxN = 1;
     let trNotifyHdr = document.createElement('tr');
     trNotifyHdr.className = 'col-hdr';
@@ -483,6 +494,7 @@ async function loadSheetData() {
 
   if (activeTab === 'ADDITIONAL PRICING') {
     const { data } = await sb.from('basement_pricing').select('*').eq('id', 1).single();
+    if (myToken !== sheetDataLoadToken) return;
     if (!data) return;
     let rowIdx = 1;
     let trHdr = document.createElement('tr');
@@ -673,6 +685,7 @@ async function loadSheetData() {
   let currentHouse = matchedHouse ? matchedHouse.key : ALL_HOUSES[0]?.key || 'kiawah';
 
   const { data } = await sb.from('cost_items').select('*, house_rates(*)').order('sort_order');
+  if (myToken !== sheetDataLoadToken) return;
   if (!data) return;
 
   // Real Sheet row number (cost_code) -> item, so B-J columns can share the
@@ -727,6 +740,7 @@ async function loadSheetData() {
     // house-tab branch below already does with reference_house_measurements.
     try {
       const { data: jqRow, error } = await sb.from('job_quantities').select('*').eq('id', 1).maybeSingle();
+      if (myToken !== sheetDataLoadToken) return;
       if (error) throw error;
       jq = jqRow || {};
     } catch (e) {
@@ -740,6 +754,7 @@ async function loadSheetData() {
     // (basement_sf, floor1_sf, ... tile_sf) as job_quantities, so no
     // offset-mapping needed — just read the row straight from Supabase.
     const { data: refRow } = await sb.from('reference_house_measurements').select('*').eq('house', currentHouse).maybeSingle();
+    if (myToken !== sheetDataLoadToken) return;
     jq = refRow || {};
   }
   const TOTAL_AREA_FIELDS = ['basement_sf', 'floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf'];
@@ -803,7 +818,8 @@ async function loadSheetData() {
 
   let colHdrTr = document.createElement('tr');
   colHdrTr.className = 'col-hdr';
-  colHdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="10">${activeTab.toUpperCase()} (${currentHouse.toUpperCase()})</td>`;
+  const houseSuffix = matchedHouse ? ' (' + currentHouse.toUpperCase() + ')' : '';
+  colHdrTr.innerHTML = `<td class="row-hdr">${rowIdx++}</td><td colspan="10">${activeTab.toUpperCase()}${houseSuffix}</td>`;
   tbody.appendChild(colHdrTr);
 
   let headerColsTr = document.createElement('tr');
