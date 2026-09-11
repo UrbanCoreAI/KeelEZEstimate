@@ -1055,20 +1055,19 @@
     <!-- ── Basement — priced separately, not part of the standard cost items ── -->
     <div class="card">
       <div class="section-label">Basement <span>Priced separately — becomes its own line item(s)</span></div>
+      <label class="lender-label" title="When on, any basement SF entered below gets its description marked 'Pricing is subject to change' and is included in the notification email sent to the address set in the admin database's NOTIFICATIONS tab.">
+        <span class="toggle-switch">
+          <input type="checkbox" id="chk-notify-basement">
+          <span class="toggle-slider"></span>
+        </span>
+        Notify Estimator
+      </label>
       <div class="f-row"><span class="f-label">Finished Basement (SF)</span>
-        <input type="number" id="basement-finished-sf" placeholder="0" min="0">
-        <label id="basement-finished-notify-label" class="custom-notify-label hidden" title="Include in the custom-pricing-needed notification email">
-          <input type="checkbox" id="basement-finished-notify-checkbox" checked> Notify
-        </label>
-      </div>
+        <input type="number" id="basement-finished-sf" placeholder="0" min="0"></div>
       <div class="f-row"><span class="f-label">Finished Basement Description</span>
         <input type="text" id="basement-finished-desc" placeholder="Description…"></div>
       <div class="f-row"><span class="f-label">Unfinished Basement (SF)</span>
-        <input type="number" id="basement-unfinished-sf" placeholder="0" min="0">
-        <label id="basement-unfinished-notify-label" class="custom-notify-label hidden" title="Include in the custom-pricing-needed notification email">
-          <input type="checkbox" id="basement-unfinished-notify-checkbox" checked> Notify
-        </label>
-      </div>
+        <input type="number" id="basement-unfinished-sf" placeholder="0" min="0"></div>
       <div class="f-row"><span class="f-label">Unfinished Basement Description</span>
         <input type="text" id="basement-unfinished-desc" placeholder="Description…"></div>
     </div>
@@ -1155,51 +1154,43 @@
 <!-- ── Custom Selection Allowances ── -->
     <div class="card custom-section">
       <div class="section-label">Custom Selection Allowances <span>Optional — creates new line items in BuilderTrend</span></div>
+      <label class="lender-label" title="When on, every custom item entered below gets its description marked 'Pricing is subject to change' and is included in the notification email sent to the address set in the admin database's NOTIFICATIONS tab.">
+        <span class="toggle-switch">
+          <input type="checkbox" id="chk-notify-custom">
+          <span class="toggle-slider"></span>
+        </span>
+        Notify Estimator
+      </label>
       <div id="custom-rows">
         <div class="custom-row">
           <input class="custom-input-name" type="text" placeholder="Item name…">
           <input class="custom-input-desc" type="text" placeholder="Description…">
           <span class="custom-price-pre">$</span>
           <input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">
-          <label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">
-            <input type="checkbox" class="custom-notify-checkbox" checked> Notify
-          </label>
         </div>
         <div class="custom-row">
           <input class="custom-input-name" type="text" placeholder="Item name…">
           <input class="custom-input-desc" type="text" placeholder="Description…">
           <span class="custom-price-pre">$</span>
           <input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">
-          <label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">
-            <input type="checkbox" class="custom-notify-checkbox" checked> Notify
-          </label>
         </div>
         <div class="custom-row">
           <input class="custom-input-name" type="text" placeholder="Item name…">
           <input class="custom-input-desc" type="text" placeholder="Description…">
           <span class="custom-price-pre">$</span>
           <input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">
-          <label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">
-            <input type="checkbox" class="custom-notify-checkbox" checked> Notify
-          </label>
         </div>
         <div class="custom-row">
           <input class="custom-input-name" type="text" placeholder="Item name…">
           <input class="custom-input-desc" type="text" placeholder="Description…">
           <span class="custom-price-pre">$</span>
           <input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">
-          <label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">
-            <input type="checkbox" class="custom-notify-checkbox" checked> Notify
-          </label>
         </div>
         <div class="custom-row">
           <input class="custom-input-name" type="text" placeholder="Item name…">
           <input class="custom-input-desc" type="text" placeholder="Description…">
           <span class="custom-price-pre">$</span>
           <input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">
-          <label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">
-            <input type="checkbox" class="custom-notify-checkbox" checked> Notify
-          </label>
         </div>
       </div>
       <button type="button" id="btn-add-custom-row" class="btn-add-row">+ Add row</button>
@@ -1290,13 +1281,6 @@
       <label class="lender-label">
         <input type="checkbox" id="chk-slow-connection">
         Slow Connection
-      </label>
-      <label class="lender-label" title="When on, items checked 'Notify' above (custom allowances and basement SF entries) get their description marked 'Pricing is subject to change' and an email listing them is sent to the address set in the admin database's NOTIFICATIONS tab.">
-        <span class="toggle-switch">
-          <input type="checkbox" id="chk-notify-estimator">
-          <span class="toggle-slider"></span>
-        </span>
-        Notify Estimator
       </label>
       <div class="est-row">
         <button id="btn-write-estimate" class="btn-estimate">Write to Estimate</button>
@@ -2009,31 +1993,13 @@ function makeCustomRow() {
   row.innerHTML = '<input class="custom-input-name" type="text" placeholder="Item name…">' +
                   '<input class="custom-input-desc" type="text" placeholder="Description…">' +
                   '<span class="custom-price-pre">$</span>' +
-                  '<input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">' +
-                  '<label class="custom-notify-label" title="Include in the custom-pricing-needed notification email">' +
-                  '<input type="checkbox" class="custom-notify-checkbox" checked> Notify</label>';
+                  '<input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">';
   return row;
 }
 
 $('btn-add-custom-row').addEventListener('click', () => {
   $('custom-rows').appendChild(makeCustomRow());
 });
-
-// ── Basement "Notify" checkboxes — appear (pre-checked) once a positive
-// SF value is entered, hidden again if the field is cleared back to 0.
-// Hiding doesn't reset .checked, so a value re-entered after being
-// cleared reappears with whatever state it last had.
-function wireBasementNotifyToggle(sfInputId, labelId) {
-  const sfInput = document.getElementById(sfInputId);
-  const label = document.getElementById(labelId);
-  if (!sfInput || !label) return;
-  sfInput.addEventListener('input', () => {
-    const hasValue = (parseFloat(sfInput.value) || 0) > 0;
-    label.classList.toggle('hidden', !hasValue);
-  });
-}
-wireBasementNotifyToggle('basement-finished-sf', 'basement-finished-notify-label');
-wireBasementNotifyToggle('basement-unfinished-sf', 'basement-unfinished-notify-label');
 
 // ═══════════════════════════════════════════════════════════
 // Write to Sheet — "Go" button
@@ -2291,19 +2257,21 @@ btnConfirm.addEventListener('click', async () => {
     }
 
 // Custom-pricing-needed notification — webpage-only, never sent by the
-    // extension's own popup/panel Write to Estimate buttons. When on, every
-    // item whose "Notify" checkbox is checked gets " Pricing is subject to
-    // change" appended to its description (kept, not replaced — see
-    // notifyItemNames below), and its name collected for the email
-    // tabpicker.js sends after Realtor Fees.
-    const notifyEstimator = $('chk-notify-estimator').checked;
+    // extension's own popup/panel Write to Estimate buttons. When a
+    // section's "Notify Estimator" toggle is on, every item written from
+    // that section gets " Pricing is subject to change" appended to its
+    // description (kept, not replaced — see notifyItemNames below), and
+    // its name collected for the email tabpicker.js sends after Realtor Fees.
+    const notifyCustom = $('chk-notify-custom').checked;
+    const notifyBasement = $('chk-notify-basement').checked;
+    const notifyEstimator = notifyCustom || notifyBasement;
     // Each entry is { name, price } — price is what this item is CURRENTLY
     // priced at on the estimate being written, so the notification email
     // can show the estimator the number they're being asked to double-check,
     // not just the item's name.
     const notifyItemNames = [];
-    function applyNotifyNote(name, desc, checked, price) {
-      if (!notifyEstimator || !checked) return desc;
+    function applyNotifyNote(name, desc, sectionOn, price) {
+      if (!sectionOn) return desc;
       notifyItemNames.push({ name: name, price: Number(price) || 0 });
       return desc ? (desc + ' Pricing is subject to change') : 'Pricing is subject to change';
     }
@@ -2317,7 +2285,6 @@ btnConfirm.addEventListener('click', async () => {
       const desc     = (row.querySelector('.custom-input-desc') || {}).value?.trim() || '';
       const priceRaw = row.querySelector('.custom-input-price').value.trim();
       const price    = parseFloat(priceRaw) || 0;
-      const notifyChecked = (row.querySelector('.custom-notify-checkbox') || {}).checked;
 
       if (!name && !priceRaw) return; // both blank — normal empty/unused row
       if (name && (!priceRaw || price <= 0)) {
@@ -2328,7 +2295,7 @@ btnConfirm.addEventListener('click', async () => {
         customRowError = 'A Custom Selection Allowance row has a price but no name.';
         return;
       }
-      customItems.push({ name, description: applyNotifyNote(name, desc, notifyChecked, price), unitCost: price });
+      customItems.push({ name, description: applyNotifyNote(name, desc, notifyCustom, price), unitCost: price });
     });
 
     if (customRowError) {
@@ -2350,13 +2317,9 @@ btnConfirm.addEventListener('click', async () => {
         'Unfinished Basement Allowance': (document.getElementById('basement-unfinished-desc').value || '').trim(),
         'Finished Basement Allowance': (document.getElementById('basement-finished-desc').value || '').trim()
       };
-      const basementNotifyCheckedByName = {
-        'Unfinished Basement Allowance': (document.getElementById('basement-unfinished-notify-checkbox') || {}).checked,
-        'Finished Basement Allowance': (document.getElementById('basement-finished-notify-checkbox') || {}).checked
-      };
       const basementLineItems = computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows);
       basementLineItems.forEach(li => {
-        const desc = applyNotifyNote(li.name, basementDescByName[li.name] || '', basementNotifyCheckedByName[li.name], li.unitCost * li.quantity);
+        const desc = applyNotifyNote(li.name, basementDescByName[li.name] || '', notifyBasement, li.unitCost * li.quantity);
         customItems.push({ name: li.name, description: desc, unitCost: li.unitCost, quantity: li.quantity });
         console.log('[Basement line] ' + li.name + ' — $' + li.unitCost + ' × qty ' + li.quantity + ' = $' + (li.unitCost * li.quantity).toFixed(2));
       });
