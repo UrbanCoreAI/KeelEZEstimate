@@ -1035,14 +1035,20 @@ async function loadSheetData() {
       // items (see buildRowsForTab's "amountRaw = item.is_fixed ? unitRaw
       // : (qtyRaw * unitRaw)").
       qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
-      // Amount is always the rounded Unit Cost times Quantity now -- for
-      // every row, Total-of-totals rows included -- instead of the 8
-      // non-fixed Total rows separately re-summing their own
-      // amount_formula. That separate sum was mathematically identical to
-      // unitCost * qtyVal anyway (same ITEMSUM list, same shared
-      // quantity), so this just keeps Amount and Unit Cost consistent
-      // with the one rounded number that actually gets written.
-      amtVal = unitCost * qtyVal;
+      // A Total row's Unit Cost (above) is itself computed via the
+      // ITEMSUM branch of unitCostFromFormula when its formula is an
+      // ITEMSUM -- which means it's ALREADY a fully qty-weighted dollar
+      // total (each referenced sub-item's own contribution is qty x unit
+      // cost), not a true per-unit rate. Multiplying it by qtyVal AGAIN
+      // here double-counts quantity and inflates the total by orders of
+      // magnitude (confirmed live: 10186 SF x an already-$129,298.90
+      // total came out to $1.3 BILLION). So a Total row's Amount reuses
+      // its own separate amount_formula sum instead -- mathematically the
+      // true dollar total -- and only a REGULAR (non-Total) row's real
+      // per-unit AVERAGE rate gets multiplied by its own quantity here.
+      amtVal = (isTotalRowItem(r) && !r.is_fixed && r.amount_formula)
+        ? amountFromFormula(r.amount_formula, r, r.item_name)
+        : unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
