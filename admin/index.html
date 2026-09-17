@@ -301,6 +301,19 @@ function houseTabName(h) {
   return h.tab_name || `2026 MASTER PLAN ${h.label.toUpperCase()}`;
 }
 
+// Always rounds UP to the nearest cent -- never nearest, never down.
+// BuilderTrend's own Unit Cost field only stores 2 decimals, so any raw
+// fractional-cent unit cost (an AVERAGE/ITEMSUM result almost always has
+// one) needs to become the exact 2-decimal number that both this admin
+// display AND BuilderTrend end up using, or the two silently drift apart
+// once a large quantity is multiplied in. The tiny epsilon subtracted
+// before ceil() absorbs float noise (e.g. 12.69 stored as
+// 12.690000000000001) so an already-exact cent value doesn't get bumped
+// up to the next one.
+function roundUpToCent(n) {
+  return Math.ceil((Number(n) || 0) * 100 - 1e-6) / 100;
+}
+
 let ALL_HOUSES = [];
 async function loadHouses() {
   const { data, error } = await sb.from('houses').select('*').order('sort_order');
@@ -997,7 +1010,17 @@ async function loadSheetData() {
     }
 
     if (activeTab === '2026 CUSTOM PLAN') {
-      unitCost = unitCostFromFormula(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined);
+      // Rounded UP to the cent, always -- BuilderTrend's own Unit Cost
+      // field only ever stores 2 decimals, so a raw fractional-cent
+      // average (e.g. $12.693784.../SF) silently gets truncated there
+      // before it's multiplied by a large quantity, and that few-cent
+      // rounding turns into tens of dollars of drift once BuilderTrend
+      // does its own Quantity x Unit Cost math (confirmed: 10186 SF x
+      // $12.69 = $129,260.34 in BuilderTrend vs the true $129,298.89).
+      // Rounding UP here first, and writing that exact same rounded cent
+      // value to BuilderTrend, means both sides multiply the identical
+      // 2-decimal number -- nothing left to silently truncate downstream.
+      unitCost = roundUpToCent(unitCostFromFormula(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined));
       // A Fixed Cost item (is_fixed) is a lump sum by definition -- the
       // Sheet itself has no real quantity for these (blank D column on
       // "TOTAL FIXED COST", and every regular Fixed Cost line just uses a
@@ -1012,15 +1035,14 @@ async function loadSheetData() {
       // items (see buildRowsForTab's "amountRaw = item.is_fixed ? unitRaw
       // : (qtyRaw * unitRaw)").
       qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
-      // The 8 non-fixed Total rows carry their own Amount formula
-      // (amount_formula, an ITEMSUM like unit_cost_formula -- see
-      // amountFromFormula above) since the Sheet sums the underlying
-      // items' own dollar amounts there, not unitCost * qtyVal of the
-      // Total row itself. Total Fixed Cost (is_fixed) has no separate
-      // Amount -- it IS the unit cost -- so it's excluded here.
-      amtVal = (isTotalRowItem(r) && !r.is_fixed && r.amount_formula)
-        ? amountFromFormula(r.amount_formula, r, r.item_name)
-        : unitCost * qtyVal;
+      // Amount is always the rounded Unit Cost times Quantity now -- for
+      // every row, Total-of-totals rows included -- instead of the 8
+      // non-fixed Total rows separately re-summing their own
+      // amount_formula. That separate sum was mathematically identical to
+      // unitCost * qtyVal anyway (same ITEMSUM list, same shared
+      // quantity), so this just keeps Amount and Unit Cost consistent
+      // with the one rounded number that actually gets written.
+      amtVal = unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);

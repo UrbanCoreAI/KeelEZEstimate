@@ -1952,6 +1952,19 @@ const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
   'Realtor Fees': 'SALES TO EDIT - REALTOR'
 };
 
+// Always rounds UP to the nearest cent -- never nearest, never down.
+// BuilderTrend's own Unit Cost field only ever stores 2 decimals, so a
+// raw fractional-cent average (e.g. $12.693784.../SF) silently gets
+// truncated there before BuilderTrend multiplies it by a large quantity
+// -- turning a few cents of rounding into tens of dollars of drift once
+// a big proxy quantity (thousands of SF) is involved. Rounding UP here,
+// at the exact number that gets sent, means BuilderTrend's own math and
+// the admin database's displayed total both start from the identical
+// 2-decimal value -- see the matching roundUpToCent in admin/index.html.
+function roundUpToCent(n) {
+  return Math.ceil((Number(n) || 0) * 100 - 1e-6) / 100;
+}
+
 async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
   const lookupNames = itemNames.map(n => ITEM_NAME_TO_COST_ITEM_NAME_WEB[n] || n);
   const uniqueNames = Array.from(new Set(lookupNames));
@@ -1975,12 +1988,12 @@ async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
     const rates = row.house_rates || [];
     if (selectedHouseKey) {
       const hr = rates.find(h => h.house === selectedHouseKey);
-      result[originalName] = hr ? unitCostOf(hr) : undefined;
+      result[originalName] = hr ? roundUpToCent(unitCostOf(hr)) : undefined;
     } else {
       const included = rates.filter(h => h.include_in_average);
       if (!included.length) { result[originalName] = undefined; return; }
       const sum = included.reduce((s, h) => s + unitCostOf(h), 0);
-      result[originalName] = sum / included.length;
+      result[originalName] = roundUpToCent(sum / included.length);
     }
   });
   return result;
