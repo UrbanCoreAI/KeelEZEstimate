@@ -2646,8 +2646,16 @@ async function confirmImport() {
   const updateRows = otherRows.filter(r => !(r.table === 'house_rates' && r.id === null));
 
   for (const r of newHouseRateRows) {
+    // include_in_average defaults to false for a brand-new house's very
+    // first rate row -- the column's own DB default is true, which is
+    // exactly how Coronado ended up silently polluting every Custom Plan
+    // average the moment it had any rate at all, even though no Sheet
+    // AVERAGE(...) formula was ever updated to list it (see the
+    // unitCostFromFormula comment above). A house only belongs in an
+    // average once its tab name is literally added to the relevant
+    // formula(s) in the Sheet and re-imported -- never automatically.
     const { error } = await sb.from('house_rates').insert({
-      cost_item_id: r.costItemId, house: r.house, amount: Number(r.next) || 0, quantity: r.newQuantity || 0
+      cost_item_id: r.costItemId, house: r.house, amount: Number(r.next) || 0, quantity: r.newQuantity || 0, include_in_average: false
     });
     results.push(error ? ('FAILED: ' + r.label + ' — ' + error.message) : ('Imported (new rate): ' + r.label));
   }
