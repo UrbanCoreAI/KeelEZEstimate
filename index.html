@@ -1928,14 +1928,17 @@ planSelect.addEventListener('change', async () => {
 });
 
 // ── Unit costs (Supabase cost_items / house_rates) ─────────────────────────
-// Mirrors fetchUnitCostsFromSupabase() in the extension's popup.js exactly
-// (same math: F = amount/quantity per house_rates row, averaged across
-// every row flagged include_in_average when no base plan is selected, or
-// pulled from that one house's own row when a base plan is selected) so
-// the webpage writes the same exact, un-rounded number the admin page
-// itself displays as column F — not a stale/rounded value BuilderTrend
-// already had. Standalone copy, not a shared import — same duplication
-// pattern as EXT_SITE_MAP/TK_SITE_MAP in the extension repo.
+// Same resolution algorithm as the admin database's own Custom Plan tab
+// (unitCostFromFormula in admin/index.html): parse each item's own
+// unit_cost_formula text, never the include_in_average flag. A flag has
+// to be kept manually in sync with what the formula actually says, and
+// drifting out of sync (a new house silently flagged into an average it
+// was never listed in, or a Total row's own flag not matching what its
+// formula actually references) is exactly what caused several rounds of
+// wrong numbers here. Parsing the formula itself can't drift -- it IS
+// the formula. Standalone copy, not a shared import -- same duplication
+// pattern as EXT_SITE_MAP/TK_SITE_MAP in the extension repo (kept in
+// sync with popup.js's own copy of this same resolver).
 const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
   'Appliance Allowance': 'Appliances Allowance',
   'Cabinet Allowance': 'Cabinets Allowance',
@@ -1949,7 +1952,11 @@ const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
   // SALES TO EDIT - REALTOR cost_items row/house_rates, same as every
   // other item. Its Quantity ("SF of Finished Areas") reuses the same
   // D46 value 'Total Finished SF' already computes below.
-  'Realtor Fees': 'SALES TO EDIT - REALTOR'
+  'Realtor Fees': 'SALES TO EDIT - REALTOR',
+  // The database's real row is singular ("Interior Door") -- this was
+  // the one item silently left un-updated on every write (no match, so
+  // tabpicker.js correctly left BuilderTrend's old $165 alone) until now.
+  'Interior Doors': 'Interior Door'
 };
 
 // Always rounds UP to the nearest cent -- never nearest, never down.
@@ -1965,36 +1972,91 @@ function roundUpToCent(n) {
   return Math.ceil((Number(n) || 0) * 100 - 1e-6) / 100;
 }
 
-async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
-  const lookupNames = itemNames.map(n => ITEM_NAME_TO_COST_ITEM_NAME_WEB[n] || n);
-  const uniqueNames = Array.from(new Set(lookupNames));
+const ITEMSUM_RE_WEB = /^=itemsum\((.*)\)$/i;
+const HOUSE_REF_RE_WEB = /'([^']+)'!F\d+/g;
 
+// item's own per-unit rate. "=ITEMSUM(...)" recurses and sums each named
+// item's own rate (never weighted by that item's own quantity -- the
+// caller applies the Total row's own Quantity once, on top of this). A
+// real "=AVERAGE('...'!F##, ...)" formula parses the house tab names directly
+// out of the formula text and averages only those houses' own
+// house_rates rows -- unless selectedHouseKey is given, in which case it
+// returns that one house's own rate directly (a real base plan's actual
+// numbers, not a blend), regardless of whether that house happens to be
+// named in the formula.
+function resolveRateWeb(item, byName, tabToKey, jq, selectedHouseKey, seen) {
+  seen = seen || new Set();
+  if (!item || seen.has(item.id)) return 0;
+  seen.add(item.id);
+  const f = (item.unit_cost_formula || '').trim();
+  const m = ITEMSUM_RE_WEB.exec(f);
+  if (m) {
+    // Sum of each named item's own rate -- never weighted by that item's
+    // own quantity. A Total row's Quantity (its own quantity_formula,
+    // applied once by the caller) is what gets multiplied in; summing
+    // qty-weighted dollar amounts here as well would double-count it.
+    // This also means it doesn't matter that a Total row's own named
+    // components can have genuinely different quantity bases (e.g.
+    // "Total for Decks & Porches" sums Decks/Porches Turnkey's $/SF-of-
+    // porch+deck rate with Aluminum Rails' $/SF-of-porch rate) -- this is
+    // a straight rate sum either way.
+    const names = m[1].split('|').map(s => s.trim()).filter(Boolean);
+    let total = 0;
+    names.forEach(nm => {
+      const ref = byName[nm.toLowerCase()];
+      if (!ref) return;
+      total += resolveRateWeb(ref, byName, tabToKey, jq, selectedHouseKey, seen);
+    });
+    return total;
+  }
+  const rates = item.house_rates || [];
+  function unitCostOf(hr) { return (hr.quantity > 0) ? (hr.amount / hr.quantity) : (hr.amount || 0); }
+  if (selectedHouseKey) {
+    const hr = rates.find(h => h.house === selectedHouseKey);
+    return hr ? unitCostOf(hr) : 0;
+  }
+  const keys = [];
+  let hm;
+  HOUSE_REF_RE_WEB.lastIndex = 0;
+  while ((hm = HOUSE_REF_RE_WEB.exec(f)) !== null) {
+    const house = ALL_HOUSES_WEB.find(h => tabToKey(h) === hm[1]);
+    if (house) keys.push(house.key);
+  }
+  const included = keys.map(k => rates.find(h => h.house === k)).filter(Boolean);
+  if (!included.length) return 0;
+  return included.reduce((s, h) => s + unitCostOf(h), 0) / included.length;
+}
+
+async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
   const { data: rows, error } = await sbClient
     .from('cost_items')
-    .select('id,item_name,house_rates(house,amount,quantity,include_in_average)')
-    .in('item_name', uniqueNames);
+    .select('id,item_name,is_fixed,quantity_formula,unit_cost_formula,house_rates(house,amount,quantity)');
   if (error) throw new Error('Supabase cost_items read failed: ' + error.message);
 
-  const byLookupName = {};
-  (rows || []).forEach(r => { byLookupName[r.item_name] = r; });
-
-  function unitCostOf(hr) { return (hr.quantity > 0) ? (hr.amount / hr.quantity) : (hr.amount || 0); }
+  const byName = {};
+  (rows || []).forEach(r => { byName[r.item_name.toLowerCase()] = r; });
+  const tabToKey = h => h.tab_name || ('2026 MASTER PLAN ' + h.label.toUpperCase());
+  const jq = buildJobQuantitiesFromInputs();
 
   const result = {};
   itemNames.forEach(originalName => {
-    const lookupName = ITEM_NAME_TO_COST_ITEM_NAME_WEB[originalName] || originalName;
-    const row = byLookupName[lookupName];
-    if (!row) { result[originalName] = undefined; return; }
-    const rates = row.house_rates || [];
-    if (selectedHouseKey) {
-      const hr = rates.find(h => h.house === selectedHouseKey);
-      result[originalName] = hr ? roundUpToCent(unitCostOf(hr)) : undefined;
-    } else {
-      const included = rates.filter(h => h.include_in_average);
-      if (!included.length) { result[originalName] = undefined; return; }
-      const sum = included.reduce((s, h) => s + unitCostOf(h), 0);
-      result[originalName] = roundUpToCent(sum / included.length);
+    if (originalName === 'Number of Baths') {
+      // Backend-only: no cost_items row of its own, never displayed as
+      // its own line in the admin database. Its Unit Cost is simply
+      // Plumbing Labor Rough In (60%)'s own rate plus Plumbing Trim Out
+      // (40%)'s own rate -- Quantity stays the real bath count (I20),
+      // set elsewhere, unchanged.
+      const roughIn = byName['plumbing labor rough in (60%)'];
+      const trimOut = byName['plumbing trim out (40%)'];
+      if (!roughIn || !trimOut) { result[originalName] = undefined; return; }
+      const rate = resolveRateWeb(roughIn, byName, tabToKey, jq, selectedHouseKey)
+                 + resolveRateWeb(trimOut, byName, tabToKey, jq, selectedHouseKey);
+      result[originalName] = roundUpToCent(rate);
+      return;
     }
+    const lookupName = ITEM_NAME_TO_COST_ITEM_NAME_WEB[originalName] || originalName;
+    const row = byName[lookupName.toLowerCase()];
+    result[originalName] = row ? roundUpToCent(resolveRateWeb(row, byName, tabToKey, jq, selectedHouseKey)) : undefined;
   });
   return result;
 }

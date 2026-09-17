@@ -709,7 +709,7 @@ async function loadSheetData() {
   data.forEach(r => { itemByRow[Number(r.cost_code)] = r; });
   const minRow = Math.min(...data.map(r => Number(r.cost_code)));
   const maxRow = Math.max(...data.map(r => Number(r.cost_code)));
-  // Name -> item lookup, used by unitCostFromFormula() below to resolve
+  // Name -> item lookup, used by resolveRate() below to resolve
   // an "=ITEMSUM(Name One|Name Two|...)" formula (see
   // convertSameTabSumFormula in buildRowsForTab) -- those reference OTHER
   // Custom Plan items by name, not by cost_code/row, since the Sheet row
@@ -892,26 +892,29 @@ async function loadSheetData() {
     // the Import Preview overlay below can reuse it to show what a NEW
     // unit_cost_formula from the Sheet would actually average to, instead
     // of just dumping the raw formula text into a yellow cell.
+    //
+    // "=ITEMSUM(Name One|Name Two|...)" -- one of the Total items' same-
+    // tab SUM(F#:F#) formula, pre-resolved to item NAMES at import time
+    // (see convertSameTabSumFormula) since raw Sheet row numbers mean
+    // nothing here -- sums each named item's own rate (resolveRate on
+    // that item), never weighted by that item's own quantity. A Total
+    // row's Amount is this rate-sum times ITS OWN Quantity (applied once,
+    // below, same as any regular row) -- so it doesn't matter that a
+    // Total row's named components can have genuinely different
+    // quantity bases (e.g. "Total for Decks & Porches" sums Decks/
+    // Porches Turnkey, priced per front+rear porch SF, with Aluminum
+    // Rails, priced per front porch SF only -- summing their rates is
+    // still well-defined, only summing their qty-weighted DOLLAR amounts
+    // wouldn't be). This exact same algorithm (same function, ported) is
+    // what the public webpage and the extension use when writing to
+    // BuilderTrend, so Amount here always equals what BuilderTrend gets.
     const houseRefRe = /'([^']+)'!F\d+/g;
-    function unitCostFromFormula(formulaStr, forItem, debugLabel) {
+    function resolveRate(formulaStr, forItem, debugLabel, seen) {
       const item = forItem || r;
+      seen = seen || new Set();
+      if (seen.has(item.id)) return 0;
+      seen.add(item.id);
       const f = (formulaStr || '').trim();
-      // "=ITEMSUM(Name One|Name Two|...)" -- one of the Total items'
-      // same-tab SUM(F#:F#) formula, pre-resolved to item NAMES at import
-      // time (see convertSameTabSumFormula) since raw Sheet row numbers
-      // mean nothing here. A referenced name that's itself another Total
-      // row (TOTAL AMOUNT's own formula references 13 other Total rows)
-      // needs its real Amount instead (see totalRowAmount), and a fixed
-      // (qty-less) referenced item's "unit cost" IS its whole dollar
-      // value. But a referenced REGULAR (non-fixed) line item -- e.g.
-      // "Total for Individual Items" summing 9 ordinary line items with
-      // real quantities -- has a per-unit cost that means nothing on its
-      // own; it must be multiplied by that item's own quantity to get the
-      // dollar amount the Sheet's =SUM(E...) is actually adding up.
-      // Getting this wrong (using raw unit cost, unscaled) was the bug
-      // that made Total for Individual Items/Sales/Selection Allowances/
-      // Site Allowances all compute to the wrong dollar total even though
-      // every individual item's own displayed Amount was correct.
       const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
       if (itemSumMatch) {
         const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
@@ -922,22 +925,11 @@ async function loadSheetData() {
             if (debugLabel) console.warn('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" has no matching cost_items row -- excluded from the sum');
             return;
           }
-          let contribution;
-          if (isTotalRowItem(refItem)) {
-            contribution = totalRowAmount(refItem);
-            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (sub-total) = ' + contribution.toFixed(2));
-          } else if (refItem.is_fixed) {
-            contribution = unitCostFromFormula(refItem.unit_cost_formula, refItem);
-            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (fixed) = ' + contribution.toFixed(2));
-          } else {
-            const refQty = evaluateQuantityFormula(refItem.quantity_formula, jq);
-            const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
-            contribution = refQty * refUnit;
-            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + contribution.toFixed(2));
-          }
-          total += contribution;
+          const refRate = resolveRate(refItem.unit_cost_formula, refItem, debugLabel, seen);
+          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" rate=' + refRate.toFixed(4));
+          total += refRate;
         });
-        if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL = ' + total.toFixed(2));
+        if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL RATE = ' + total.toFixed(4));
         return total;
       }
       // Every regular Custom Plan item's unit_cost_formula: an AVERAGE
@@ -956,58 +948,6 @@ async function loadSheetData() {
       const costs = rates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
       return costs.length ? (costs.reduce((s, v) => s + v, 0) / costs.length) : 0;
     }
-    // The 8 non-fixed Total rows' own "Total" (Amount/E) is a real Sheet
-    // formula too, same as their Unit Cost -- e.g. "=SUM(E28:E30)",
-    // resolved at import time into "=ITEMSUM(Name1|Name2|...)" the same
-    // way as unit_cost_formula (see convertSameTabSumFormula), but stored
-    // in amount_formula since it's a different sum (dollar amounts, not
-    // unit costs). Sums each referenced item's own live Amount (its own
-    // quantity times its own unit cost) rather than reusing unitCost *
-    // qtyVal of the Total row itself, since that's what the Sheet
-    // actually computes and the two can legitimately differ when the
-    // underlying items don't share one common quantity. Same Total-row
-    // exception as unitCostFromFormula above -- a referenced name that's
-    // itself a Total row uses its own real Amount via totalRowAmount,
-    // not quantity x unit cost (a Total row's own "quantity" is the row-
-    // above's area formula, unrelated to what it should contribute here).
-    function amountFromFormula(formulaStr, forItem, debugLabel) {
-      const item = forItem || r;
-      const f = (formulaStr || '').trim();
-      const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
-      if (itemSumMatch) {
-        const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
-        let total = 0;
-        names.forEach(nm => {
-          const refItem = itemByName[nm.toLowerCase()];
-          if (!refItem) {
-            if (debugLabel) console.warn('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" has no matching cost_items row -- excluded from the sum');
-            return;
-          }
-          let contribution;
-          if (isTotalRowItem(refItem)) {
-            contribution = totalRowAmount(refItem);
-            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" (sub-total) = ' + contribution.toFixed(2));
-          } else {
-            const refQty = refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq);
-            const refUnit = unitCostFromFormula(refItem.unit_cost_formula, refItem);
-            contribution = refQty * refUnit;
-            if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" qty=' + refQty + ' x unit=' + refUnit.toFixed(2) + ' = ' + contribution.toFixed(2));
-          }
-          total += contribution;
-        });
-        if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL = ' + total.toFixed(2));
-        return total;
-      }
-      const n = Number(f);
-      return isFinite(n) ? n : 0;
-    }
-    // The real, current Amount of ANY Total row, fixed or not -- shared by
-    // both functions above so a Total-of-Totals reference (TOTAL AMOUNT)
-    // always gets the same number this row's own display would show,
-    // rather than re-deriving it a different (wrong) way.
-    function totalRowAmount(totalItem) {
-      return totalItem.is_fixed ? unitCostFromFormula(totalItem.unit_cost_formula, totalItem) : amountFromFormula(totalItem.amount_formula, totalItem);
-    }
 
     if (activeTab === '2026 CUSTOM PLAN') {
       // Rounded UP to the cent, always -- BuilderTrend's own Unit Cost
@@ -1015,40 +955,21 @@ async function loadSheetData() {
       // average (e.g. $12.693784.../SF) silently gets truncated there
       // before it's multiplied by a large quantity, and that few-cent
       // rounding turns into tens of dollars of drift once BuilderTrend
-      // does its own Quantity x Unit Cost math (confirmed: 10186 SF x
-      // $12.69 = $129,260.34 in BuilderTrend vs the true $129,298.89).
-      // Rounding UP here first, and writing that exact same rounded cent
-      // value to BuilderTrend, means both sides multiply the identical
-      // 2-decimal number -- nothing left to silently truncate downstream.
-      unitCost = roundUpToCent(unitCostFromFormula(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined));
+      // does its own Quantity x Unit Cost math. Rounding UP here first,
+      // and writing that exact same rounded cent value to BuilderTrend,
+      // means both sides multiply the identical 2-decimal number --
+      // nothing left to silently truncate downstream.
+      unitCost = roundUpToCent(resolveRate(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined));
       // A Fixed Cost item (is_fixed) is a lump sum by definition -- the
       // Sheet itself has no real quantity for these (blank D column on
       // "TOTAL FIXED COST", and every regular Fixed Cost line just uses a
       // literal 1) -- so always treat quantity as 1 rather than trusting
-      // whatever text sits in quantity_formula. This matters most for
-      // "Total Fixed Cost": that field was seeded by the original SQL
-      // migration with the non-numeric placeholder "sheet_total_row"
-      // (since import never had a real D value to write there), which
-      // evaluateQuantityFormula turns into 0 -- silently zeroing Amount
-      // even once Unit Cost is correct. Mirrors the house-tab import
-      // logic, which already skips multiplying by quantity for is_fixed
-      // items (see buildRowsForTab's "amountRaw = item.is_fixed ? unitRaw
-      // : (qtyRaw * unitRaw)").
+      // whatever text sits in quantity_formula. Mirrors the house-tab
+      // import logic, which already skips multiplying by quantity for
+      // is_fixed items (see buildRowsForTab's "amountRaw = item.is_fixed
+      // ? unitRaw : (qtyRaw * unitRaw)").
       qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
-      // A Total row's Unit Cost (above) is itself computed via the
-      // ITEMSUM branch of unitCostFromFormula when its formula is an
-      // ITEMSUM -- which means it's ALREADY a fully qty-weighted dollar
-      // total (each referenced sub-item's own contribution is qty x unit
-      // cost), not a true per-unit rate. Multiplying it by qtyVal AGAIN
-      // here double-counts quantity and inflates the total by orders of
-      // magnitude (confirmed live: 10186 SF x an already-$129,298.90
-      // total came out to $1.3 BILLION). So a Total row's Amount reuses
-      // its own separate amount_formula sum instead -- mathematically the
-      // true dollar total -- and only a REGULAR (non-Total) row's real
-      // per-unit AVERAGE rate gets multiplied by its own quantity here.
-      amtVal = (isTotalRowItem(r) && !r.is_fixed && r.amount_formula)
-        ? amountFromFormula(r.amount_formula, r, r.item_name)
-        : unitCost * qtyVal;
+      amtVal = unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
@@ -1094,7 +1015,7 @@ async function loadSheetData() {
         <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\'")}', '${safeQtyF}')">✏️</button>
       `;
     const eHtml = eDiff
-      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + amountFromFormula(eDiff.next).toFixed(2)) : importCellHtml(eDiff, true))
+      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + (resolveRate(eDiff.next, r) * qtyVal).toFixed(2)) : importCellHtml(eDiff, true))
       : `
         ${formattedAmt}
         ${activeTab === '2026 CUSTOM PLAN'
@@ -1103,7 +1024,7 @@ async function loadSheetData() {
         }
       `;
     const fHtml = fDiff
-      ? (isCustomTab ? importFormulaCellHtml(fDiff, '$' + unitCost.toFixed(2), '$' + unitCostFromFormula(fDiff.next).toFixed(2)) : importCellHtml(fDiff, true))
+      ? (isCustomTab ? importFormulaCellHtml(fDiff, '$' + unitCost.toFixed(2), '$' + resolveRate(fDiff.next, r).toFixed(2)) : importCellHtml(fDiff, true))
       : `
         ${formattedUnitCost}
         ${activeTab === '2026 CUSTOM PLAN'
@@ -1837,7 +1758,7 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
     // here into "=ITEMSUM(Name One|Name Two|...)" — resolving each
     // referenced row to the actual item NAME sitting there right now
     // (via this same B3:F250 fetch) — which loadSheetData's
-    // unitCostFromFormula()/amountFromFormula() know how to resolve by
+    // loadSheetData's resolveRate() knows how to resolve by
     // name instead of row position. A formula that's already a
     // cross-house AVERAGE (some of these rows' F column uses that
     // instead) is left untouched — that form already works today.
@@ -2679,9 +2600,12 @@ async function confirmImport() {
     // exactly how Coronado ended up silently polluting every Custom Plan
     // average the moment it had any rate at all, even though no Sheet
     // AVERAGE(...) formula was ever updated to list it (see the
-    // unitCostFromFormula comment above). A house only belongs in an
+    // resolveRate comment above). A house only belongs in an
     // average once its tab name is literally added to the relevant
     // formula(s) in the Sheet and re-imported -- never automatically.
+    // NOTE: resolveRate() now parses the formula text directly and never
+    // reads this flag at all, so this default is just a safe historical
+    // fallback for any other code that might still look at it.
     const { error } = await sb.from('house_rates').insert({
       cost_item_id: r.costItemId, house: r.house, amount: Number(r.next) || 0, quantity: r.newQuantity || 0, include_in_average: false
     });
