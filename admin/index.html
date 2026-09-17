@@ -1010,38 +1010,45 @@ async function loadSheetData() {
     }
 
     if (activeTab === '2026 CUSTOM PLAN') {
-      // Unit Cost here is computed the exact same way the public webpage's
-      // fetchUnitCostsFromSupabaseWeb (and the extension's own
-      // fetchUnitCostsFromSupabase) compute it when they write to
-      // BuilderTrend: average THIS item's own house_rates rows directly
-      // (amount/quantity per house, only include_in_average=true houses),
-      // never by recursively re-deriving it from a Total row's ITEMSUM/
-      // AVERAGE formula text. Every cost_items row -- Total rows included
-      // -- has its own real house_rates, imported straight from that
-      // row's own cell on each house's Sheet tab, so there's no need for
-      // two separate computations that can quietly drift apart (that
-      // drift is exactly how a Total row once multiplied its own
-      // ITEMSUM-derived dollar total by quantity AGAIN and showed $1.3
-      // billion). Rounded UP to the cent because BuilderTrend's own Unit
-      // Cost field only ever stores 2 decimals -- rounding up here, at
-      // the same value that gets written, means both sides multiply the
-      // identical 2-decimal number and Amount always equals what
-      // BuilderTrend shows.
-      const customRates = (r.house_rates || []).filter(h => h.include_in_average);
-      const customUnitCostOf = h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0);
-      unitCost = customRates.length
-        ? roundUpToCent(customRates.reduce((s, h) => s + customUnitCostOf(h), 0) / customRates.length)
-        : 0;
+      // Rounded UP to the cent, always -- BuilderTrend's own Unit Cost
+      // field only ever stores 2 decimals, so a raw fractional-cent
+      // average (e.g. $12.693784.../SF) silently gets truncated there
+      // before it's multiplied by a large quantity, and that few-cent
+      // rounding turns into tens of dollars of drift once BuilderTrend
+      // does its own Quantity x Unit Cost math (confirmed: 10186 SF x
+      // $12.69 = $129,260.34 in BuilderTrend vs the true $129,298.89).
+      // Rounding UP here first, and writing that exact same rounded cent
+      // value to BuilderTrend, means both sides multiply the identical
+      // 2-decimal number -- nothing left to silently truncate downstream.
+      unitCost = roundUpToCent(unitCostFromFormula(r.unit_cost_formula, r, isTotalRowItem(r) ? r.item_name : undefined));
       // A Fixed Cost item (is_fixed) is a lump sum by definition -- the
       // Sheet itself has no real quantity for these (blank D column on
       // "TOTAL FIXED COST", and every regular Fixed Cost line just uses a
       // literal 1) -- so always treat quantity as 1 rather than trusting
-      // whatever text sits in quantity_formula. Mirrors the house-tab
-      // import logic, which already skips multiplying by quantity for
-      // is_fixed items (see buildRowsForTab's "amountRaw = item.is_fixed
-      // ? unitRaw : (qtyRaw * unitRaw)").
+      // whatever text sits in quantity_formula. This matters most for
+      // "Total Fixed Cost": that field was seeded by the original SQL
+      // migration with the non-numeric placeholder "sheet_total_row"
+      // (since import never had a real D value to write there), which
+      // evaluateQuantityFormula turns into 0 -- silently zeroing Amount
+      // even once Unit Cost is correct. Mirrors the house-tab import
+      // logic, which already skips multiplying by quantity for is_fixed
+      // items (see buildRowsForTab's "amountRaw = item.is_fixed ? unitRaw
+      // : (qtyRaw * unitRaw)").
       qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
-      amtVal = unitCost * qtyVal;
+      // A Total row's Unit Cost (above) is itself computed via the
+      // ITEMSUM branch of unitCostFromFormula when its formula is an
+      // ITEMSUM -- which means it's ALREADY a fully qty-weighted dollar
+      // total (each referenced sub-item's own contribution is qty x unit
+      // cost), not a true per-unit rate. Multiplying it by qtyVal AGAIN
+      // here double-counts quantity and inflates the total by orders of
+      // magnitude (confirmed live: 10186 SF x an already-$129,298.90
+      // total came out to $1.3 BILLION). So a Total row's Amount reuses
+      // its own separate amount_formula sum instead -- mathematically the
+      // true dollar total -- and only a REGULAR (non-Total) row's real
+      // per-unit AVERAGE rate gets multiplied by its own quantity here.
+      amtVal = (isTotalRowItem(r) && !r.is_fixed && r.amount_formula)
+        ? amountFromFormula(r.amount_formula, r, r.item_name)
+        : unitCost * qtyVal;
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
