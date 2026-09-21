@@ -941,20 +941,8 @@ async function loadSheetData() {
             return;
           }
           const refRate = resolveRate(refItem.unit_cost_formula, refItem, debugLabel, seen);
-          // "Total Amount" is the one row whose named components are
-          // OTHER Total rows, each with its own genuinely different
-          // Quantity (SF of one kind, SF of another, a flat $ figure,
-          // etc.) -- unlike every other Total row, which combines real
-          // line items into ONE shared rate. Summing raw rates here would
-          // add e.g. "Total Finished SF"'s $26.88/SF rate instead of its
-          // real $41,475.84 Amount. So a reference to another Total row
-          // contributes its own real Amount (rate x that row's own
-          // Quantity); a reference to a regular line item still
-          // contributes its plain rate, same as always.
-          const refQty = isTotalRowItem(refItem) ? (refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq)) : 1;
-          const refContribution = refRate * refQty;
-          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" rate=' + refRate.toFixed(4) + (refQty !== 1 ? ' x qty=' + refQty : '') + ' = ' + refContribution.toFixed(4));
-          total += refContribution;
+          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" rate=' + refRate.toFixed(4));
+          total += refRate;
         });
         if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL RATE = ' + total.toFixed(4));
         return total;
@@ -974,6 +962,41 @@ async function loadSheetData() {
       const rates = keys.map(key => (item.house_rates || []).find(h => h.house === key)).filter(Boolean);
       const costs = rates.map(h => (h.quantity > 0) ? (h.amount / h.quantity) : (h.amount || 0));
       return costs.length ? (costs.reduce((s, v) => s + v, 0) / costs.length) : 0;
+    }
+
+    // The real dollar Amount (E column) -- confirmed directly against the
+    // live Sheet: a Total row's own Amount sums each named component's
+    // own real Amount (that component's rate x ITS OWN quantity), never
+    // its bare rate. resolveRate above answers "what does this row's F
+    // column show" (a straight sum of rates, matching the Sheet's F);
+    // this answers "what does this row's E column show" -- genuinely
+    // different numbers whenever a component's own quantity isn't 1
+    // (confirmed live: "Total for Site Allowances" showed $19,820.23,
+    // matching the SUM OF RATES, when the Sheet's real Amount is
+    // $21,661.92 -- Landscaping Allowance's $0.90 rate was being summed
+    // instead of its real $1,855.80 amount). A regular (non-Total) leaf
+    // item's Amount is simply its own rate times its own quantity, same
+    // math as every house tab.
+    function resolveAmount(forItem, seen) {
+      const item = forItem || r;
+      seen = seen || new Set();
+      if (seen.has(item.id + ':amount')) return 0;
+      seen.add(item.id + ':amount');
+      const f = (item.unit_cost_formula || '').trim();
+      const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
+      if (itemSumMatch) {
+        const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
+        let total = 0;
+        names.forEach(nm => {
+          const refItem = itemByName[nm.toLowerCase()];
+          if (!refItem) return;
+          total += resolveAmount(refItem, seen);
+        });
+        return total;
+      }
+      const rate = resolveRate(item.unit_cost_formula, item);
+      const qty = item.is_fixed ? 1 : evaluateQuantityFormula(item.quantity_formula, jq);
+      return rate * qty;
     }
 
     if (activeTab === '2026 CUSTOM PLAN') {
@@ -996,7 +1019,7 @@ async function loadSheetData() {
       // is_fixed items (see buildRowsForTab's "amountRaw = item.is_fixed
       // ? unitRaw : (qtyRaw * unitRaw)").
       qtyVal = r.is_fixed ? 1 : evaluateQuantityFormula(r.quantity_formula, jq);
-      amtVal = unitCost * qtyVal;
+      amtVal = roundUpToCent(resolveAmount(r));
       unitFormulaStr = r.unit_cost_formula || '(no formula)';
     } else {
       houseRate = (r.house_rates || []).find(h => h.house === currentHouse);
@@ -1042,7 +1065,7 @@ async function loadSheetData() {
         <button class="pencil-btn" title="Edit Quantity Formula" onclick="openEditModal('cost_items', ${r.id}, 'quantity_formula', '${safeName}', 'Quantity Formula', '${qtyFormulaStr.replace(/'/g, "\'")}', '${safeQtyF}')">✏️</button>
       `;
     const eHtml = eDiff
-      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + (resolveRate(eDiff.next, r) * qtyVal).toFixed(2)) : importCellHtml(eDiff, true))
+      ? (isCustomTab ? importFormulaCellHtml(eDiff, '$' + amtVal.toFixed(2), '$' + resolveAmount(Object.assign({}, r, { unit_cost_formula: eDiff.next })).toFixed(2)) : importCellHtml(eDiff, true))
       : `
         ${formattedAmt}
         ${activeTab === '2026 CUSTOM PLAN'
