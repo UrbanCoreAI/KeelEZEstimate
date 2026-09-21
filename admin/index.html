@@ -982,7 +982,19 @@ async function loadSheetData() {
       seen = seen || new Set();
       if (seen.has(item.id + ':amount')) return 0;
       seen.add(item.id + ':amount');
-      const f = (item.unit_cost_formula || '').trim();
+      // Amount and Unit Cost read DIFFERENT formula columns -- for every
+      // Total row except one, amount_formula is just a copy of
+      // unit_cost_formula (same ITEMSUM text), so reading either gave the
+      // same answer. "Total Finished SF" is the one exception: its
+      // unit_cost_formula is a genuine 2-house AVERAGE (its own real
+      // rate, used for the F column), but its amount_formula is the real
+      // ITEMSUM of the 12 underlying line items (Floor Trusses...Rough
+      // Cleaning) -- confirmed against the live Sheet (E35:E46). Reading
+      // unit_cost_formula here was silently doing rate x quantity instead
+      // of summing those 12 real amounts. A lump-sum row (Total Fixed
+      // Cost, Total Amount) has no separate amount_formula at all, so
+      // falls back to unit_cost_formula, same as before.
+      const f = (item.amount_formula || item.unit_cost_formula || '').trim();
       const itemSumMatch = /^=itemsum\((.*)\)$/i.exec(f);
       if (itemSumMatch) {
         const names = itemSumMatch[1].split('|').map(s => s.trim()).filter(Boolean);
