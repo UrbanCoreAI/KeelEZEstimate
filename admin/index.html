@@ -391,7 +391,7 @@ async function confirmEdit() {
   }
 
   const JOB_QUANTITIES_NUMERIC_COLS = ['basement_sf', 'floor1_sf', 'floor2_sf', 'floor3_sf', 'attic_storage_sf', 'habitable_attic_sf', 'front_porch_sf', 'rear_porch_sf', 'rear_deck_sf', 'garage_sf', 'exterior_doors', 'windows', 'baths', 'cabinets_lf', 'countertop_lf', 'staircases', 'porch_columns', 'garage_doors', 'interior_doors', 'carpet_sf', 'hardwood_sf', 'tile_sf', 'unfinished_basement_sf', 'finished_basement_sf'];
-  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier', 'markup_percent', ...JOB_QUANTITIES_NUMERIC_COLS];
+  const NUMERIC_COLS = ['amount', 'quantity', 'cost', 'fixed_cost_per_house', 'shell_cost_per_sf', 'finish_cost_per_sf', 'lower_range_multiplier', 'upper_range_multiplier', 'good_multiplier', 'better_multiplier', 'best_multiplier', 'markup_percent', 'allowance_markup_percent', ...JOB_QUANTITIES_NUMERIC_COLS];
   let payload = {};
   if (col === 'unit_cost') {
     const targetQty = parseFloat(document.getElementById('modal-formula-val').dataset.qty || 1);
@@ -611,6 +611,11 @@ async function loadSheetData() {
     // whatever BuilderTrend's own template defaults to. Singleton row
     // (id=1), same edit pattern as the sections above. See
     // supabase-migrations/08_markup_settings.sql for the schema/RLS.
+    // Allowance Markup (13_allowance_markup.sql) replaces it, instead of
+    // stacking on top of it, for every Selection/Site/Custom Selection
+    // Allowance item and every Site Options dropdown selection -- every
+    // other line (Base House Pricing, Individual Items, Realtor Fees)
+    // still uses Markup Percent above.
     const { data: markupData } = await sb.from('markup_settings').select('*').eq('id', 1).single();
     if (markupData) {
       let trMarkupHdr = document.createElement('tr');
@@ -627,6 +632,16 @@ async function loadSheetData() {
         <td></td>
       `;
       tbody.appendChild(trMarkup);
+
+      let trAllowMarkup = document.createElement('tr');
+      let allowMarkupRow = rowIdx++;
+      trAllowMarkup.innerHTML = `
+        <td class="row-hdr" style="text-align:center;">${allowMarkupRow}</td>
+        <td colspan="3"><strong>Allowance Markup</strong> <span style="color:#9aa0a6;font-size:10px;font-style:italic;">Selection/Site/Custom Allowances + Site Options only</span></td>
+        <td colspan="2">${markupData.allowance_markup_percent}% <button class="pencil-btn" onclick="openEditModal('markup_settings', ${markupData.id}, 'allowance_markup_percent', 'Allowance Markup', 'Allowance Markup', '=ALLOWANCE_MARKUP_PERCENT', '${markupData.allowance_markup_percent}')">✏️</button></td>
+        <td></td>
+      `;
+      tbody.appendChild(trAllowMarkup);
     }
 
     // Unfinished/Finished Basement SF are per-job measurements, stored in
