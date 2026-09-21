@@ -941,8 +941,20 @@ async function loadSheetData() {
             return;
           }
           const refRate = resolveRate(refItem.unit_cost_formula, refItem, debugLabel, seen);
-          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" rate=' + refRate.toFixed(4));
-          total += refRate;
+          // "Total Amount" is the one row whose named components are
+          // OTHER Total rows, each with its own genuinely different
+          // Quantity (SF of one kind, SF of another, a flat $ figure,
+          // etc.) -- unlike every other Total row, which combines real
+          // line items into ONE shared rate. Summing raw rates here would
+          // add e.g. "Total Finished SF"'s $26.88/SF rate instead of its
+          // real $41,475.84 Amount. So a reference to another Total row
+          // contributes its own real Amount (rate x that row's own
+          // Quantity); a reference to a regular line item still
+          // contributes its plain rate, same as always.
+          const refQty = isTotalRowItem(refItem) ? (refItem.is_fixed ? 1 : evaluateQuantityFormula(refItem.quantity_formula, jq)) : 1;
+          const refContribution = refRate * refQty;
+          if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': "' + nm + '" rate=' + refRate.toFixed(4) + (refQty !== 1 ? ' x qty=' + refQty : '') + ' = ' + refContribution.toFixed(4));
+          total += refContribution;
         });
         if (debugLabel) console.log('[Keel][TotalAmount] ' + debugLabel + ': TOTAL RATE = ' + total.toFixed(4));
         return total;
