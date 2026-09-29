@@ -114,7 +114,7 @@
         <input type="checkbox" id="preview-skip-issues-chk" onchange="setSkipFormatIssues(this.checked)"> Skip cells that look wrong
       </label>
       <button class="modal-btn btn-cancel" onclick="cancelImportPreview()">Cancel</button>
-      <button class="modal-btn btn-confirm" onclick="confirmImport()">Confirm Import</button>
+      <button id="preview-confirm-btn" class="modal-btn btn-confirm" onclick="confirmImport()">Confirm Import</button>
     </div>
   </div>
   <div id="preview-issues-panel" style="display:none;background:#fef7e0;border-bottom:1px solid #f9ab00;padding:8px 14px;font-size:12px;"></div>
@@ -2568,7 +2568,14 @@ function renderFormatIssueSummary(issues) {
 
 async function confirmImport() {
   if (!importPreview) return;
-  const confirmBtn = document.getElementById('import-confirm-btn');
+  // Two different "Confirm Import" buttons exist -- the modal's (used for
+  // Site Options/Additional Pricing, a flat list) and the on-sheet preview
+  // banner's (used for house/Custom Plan tabs, see enterPreviewMode). Only
+  // one is ever visible at a time; pick whichever one the user actually
+  // clicked so the "Importing…"/disabled feedback shows up where they're
+  // looking, instead of silently updating the other, hidden one.
+  const bannerVisible = document.getElementById('preview-banner').style.display !== 'none';
+  const confirmBtn = document.getElementById(bannerVisible ? 'preview-confirm-btn' : 'import-confirm-btn');
   confirmBtn.disabled = true;
   confirmBtn.textContent = 'Importing…';
   // Format-drift cells are written anyway by default (Sheet wins), same
