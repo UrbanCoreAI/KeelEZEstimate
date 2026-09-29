@@ -321,9 +321,10 @@ async function loadHouses() {
   if (error) { console.error('Could not load houses:', error.message); return; }
   ALL_HOUSES = data || [];
   const slot = document.getElementById('house-tabs-slot');
-  slot.innerHTML = ALL_HOUSES.map(h =>
-    `<div class="tab-item" onclick="switchSheetTab('${houseTabName(h).replace(/'/g, "\\'")}', this)">${houseTabName(h)}</div>`
-  ).join('');
+  slot.innerHTML = ALL_HOUSES.map(h => {
+    const pendingStyle = pendingNewBasePlanKeys.has(h.key) ? ' style="background:#fff2b2;" title="Added this import — its pricing/measurements are staged, not yet written until you Confirm Import"' : '';
+    return `<div class="tab-item"${pendingStyle} onclick="switchSheetTab('${houseTabName(h).replace(/'/g, "\\'")}', this)">${houseTabName(h)}</div>`;
+  }).join('');
 }
 
 async function toggleIncludeInAverage(houseRateId, checked) {
@@ -1391,6 +1392,12 @@ const REFERENCE_LABEL_ALIASES = {
 
 let sheetsAccessToken = null;
 let importPreview = null; // { tab, rows: [{label, table, id, field, current, next, valid, reason, changed}] }
+// House keys added via confirmNewBasePlan() during the CURRENT import
+// session — its own tab gets a yellow highlight in the footer (same
+// yellow used for a changed cell) so it's visually obvious the house
+// record exists but its pricing/measurements are still only staged,
+// not yet written by Confirm Import. Cleared on cancel/confirm/reopen.
+let pendingNewBasePlanKeys = new Set();
 
 // Base plan (house) tabs come from the same "houses" table ALL_HOUSES
 // already loads for the sheet-tabs footer — a house key -> its Sheet
@@ -1534,7 +1541,10 @@ function classifyTab(tabName) {
     // miss/dismiss as a fluke. Stripped here so both spellings guess the
     // same clean name.
     const name = m[2].trim().replace(/^-+\s*/, '');
-    const label = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+    // Title-case each word ("OAK RIDGE" -> "Oak Ridge") rather than only
+    // the very first letter of the whole string ("Oak ridge") -- most
+    // base plan names are more than one word.
+    const label = name.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
     const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
     return { type: 'new_base_plan', year: m[1], name, guessedLabel: label, guessedKey: key };
   }
@@ -1605,6 +1615,7 @@ let skipFormatIssues = false;
 
 async function openImportModal() {
   importPreview = null;
+  if (pendingNewBasePlanKeys.size) { pendingNewBasePlanKeys = new Set(); loadHouses(); }
   driveFilesCache = null;
   realSheetTabsCache = null;
   selectedSpreadsheetId = null;
@@ -1769,6 +1780,7 @@ async function confirmNewBasePlan(tabName) {
   const sortOrder = ALL_HOUSES.length ? Math.max(...ALL_HOUSES.map(h => h.sort_order)) + 1 : 1;
   const { error } = await sb.from('houses').insert({ key: entry.guessedKey, label: entry.guessedLabel, sort_order: sortOrder, tab_name: tabName });
   if (error) { alert('Could not add "' + entry.guessedLabel + '" as a base plan: ' + error.message); return; }
+  pendingNewBasePlanKeys.add(entry.guessedKey);
   await loadHouses();
 
   const classified = classifyTab(tabName); // now resolves to type 'house'
@@ -2381,6 +2393,7 @@ function updatePreviewIssuesPanel(tabName) {
 
 function cancelImportPreview() {
   importPreview = null;
+  if (pendingNewBasePlanKeys.size) { pendingNewBasePlanKeys = new Set(); loadHouses(); }
   document.getElementById('preview-banner').style.display = 'none';
   document.getElementById('preview-issues-panel').style.display = 'none';
   document.getElementById('preview-newplan-panel').style.display = 'none';
@@ -2729,7 +2742,9 @@ async function confirmImport() {
     document.getElementById('sheet-grid-container').style.background = '';
     document.getElementById('import-btn').style.display = '';
     importPreview = null;
+    pendingNewBasePlanKeys = new Set();
     alert('Import complete:\n\n' + results.join('\n'));
+    loadHouses();
     loadSheetData();
     return;
   }
@@ -2739,6 +2754,7 @@ async function confirmImport() {
   confirmBtn.disabled = false;
   confirmBtn.textContent = 'Confirm Import';
   importPreview = null;
+  pendingNewBasePlanKeys = new Set();
   loadSheetData();
 }
 </script>
