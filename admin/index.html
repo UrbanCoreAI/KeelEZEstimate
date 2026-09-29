@@ -117,6 +117,7 @@
       <button id="preview-confirm-btn" class="modal-btn btn-confirm" onclick="confirmImport()">Confirm Import</button>
     </div>
   </div>
+  <div id="preview-newplan-panel" style="display:none;background:#e8f0fe;border-bottom:1px solid #1a73e8;padding:8px 14px;font-size:12px;"></div>
   <div id="preview-issues-panel" style="display:none;background:#fef7e0;border-bottom:1px solid #f9ab00;padding:8px 14px;font-size:12px;"></div>
 
   <div class="spreadsheet-container" id="sheet-grid-container">
@@ -1912,12 +1913,6 @@ async function buildRowsForTab(token, spreadsheetId, tabName, classified) {
       const rowNum = rowIdx + 3;
       const sheetQty = (sheetRows[rowIdx][2] || '').toString();
       const sheetUnit = (sheetRows[rowIdx][4] || '').toString();
-      // TEMP DIAGNOSTIC — pinpointing why Unit Cost previews as $0.00 for
-      // some regular (non-Total) items. Filter the console for
-      // "[Keel][CustomItem]" to see every row's raw F-cell text next to
-      // what's currently stored, without wading through the Total-row
-      // recursion logs. Safe to remove once the real cause is confirmed.
-      console.log('[Keel][CustomItem] "' + item.item_name + '" F' + rowNum + ' raw=' + JSON.stringify(sheetUnit) + ' current=' + JSON.stringify(item.unit_cost_formula) + ' is_fixed=' + item.is_fixed);
       pushRowIfChanged(rows, item.item_name + ' — Quantity Formula', 'cost_items', item.id, 'quantity_formula', item.quantity_formula, sheetQty, { valid: true }, false, 'D' + rowNum);
       // Amount (column E) is deliberately left blank on the Custom Plan
       // tab — it only ever gets a real value in Supabase, never in the
@@ -2325,6 +2320,7 @@ function enterPreviewMode() {
   document.getElementById('import-btn').style.display = 'none';
   document.getElementById('preview-banner').style.display = 'flex';
   document.getElementById('preview-skip-issues-chk').checked = skipFormatIssues;
+  updateNewBasePlanBanner();
   document.getElementById('sheet-grid-container').style.outline = '3px solid #f9ab00';
   document.getElementById('sheet-grid-container').style.background = '#fffdf5';
   const tabEl = Array.from(document.querySelectorAll('.sheet-tabs-footer .tab-item'))
@@ -2353,6 +2349,7 @@ function updatePreviewBannerSummary() {
 // shown as a panel directly under the banner — same content that used to
 // live inside the modal, just scoped to whichever tab is on screen.
 function updatePreviewIssuesPanel(tabName) {
+  updateNewBasePlanBanner();
   const panel = document.getElementById('preview-issues-panel');
   if (!panel) return;
   updatePreviewBannerSummary();
@@ -2386,10 +2383,43 @@ function cancelImportPreview() {
   importPreview = null;
   document.getElementById('preview-banner').style.display = 'none';
   document.getElementById('preview-issues-panel').style.display = 'none';
+  document.getElementById('preview-newplan-panel').style.display = 'none';
   document.getElementById('sheet-grid-container').style.outline = '';
   document.getElementById('sheet-grid-container').style.background = '';
   document.getElementById('import-btn').style.display = '';
   loadSheetData();
+}
+
+// Shared by both preview UIs: the modal's flat list (renderImportPreview,
+// used for Site Options/Additional Pricing) and the on-sheet preview's own
+// banner (updateNewBasePlanBanner, used for house/Custom Plan tabs — see
+// enterPreviewMode). Previously this HTML only ever got built inside
+// renderImportPreview(), which enterPreviewMode() skips entirely whenever
+// a house or Custom Plan tab is part of the preview -- i.e. almost always,
+// since Custom Plan is nearly always selected alongside a new base plan
+// tab. That silently dropped the "Add as a base plan" prompt with no
+// error and no other sign anything was wrong.
+function newBasePlanBannerHtml(detectedNewBasePlans) {
+  if (!detectedNewBasePlans || !detectedNewBasePlans.length) return '';
+  return detectedNewBasePlans.map(d =>
+    '<div style="background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;">' +
+    `<strong>"${d.tabName}" looks like a new base plan</strong> — not yet in the houses table.<br>` +
+    `Add it as <strong>${d.guessedLabel}</strong> (key: ${d.guessedKey})? It'll immediately show up in the extension's and webpage's base plan dropdowns, and this tab's pricing/measurements will be imported right after.` +
+    ` <button class="modal-btn btn-confirm" style="margin-top:6px;" onclick="confirmNewBasePlan('${d.tabName.replace(/'/g, "\\'")}')">Add "${d.guessedLabel}" as a base plan</button>` +
+    '</div>'
+  ).join('');
+}
+
+// Page-level (not per-tab) — a new base plan can be spotted while any tab
+// is on screen, so this stays visible across tab switches until
+// confirmNewBasePlan() removes it from importPreview.detectedNewBasePlans.
+function updateNewBasePlanBanner() {
+  const panel = document.getElementById('preview-newplan-panel');
+  if (!panel) return;
+  const list = importPreview ? importPreview.detectedNewBasePlans : null;
+  if (!list || !list.length) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  panel.innerHTML = newBasePlanBannerHtml(list);
+  panel.style.display = 'block';
 }
 
 function renderImportPreview() {
@@ -2429,15 +2459,7 @@ function renderImportPreview() {
   // of just skipping it. Adding it immediately makes it show up in the
   // extension's and public webpage's base-plan dropdowns too, since both
   // already read the houses table live — nothing else to wire up.
-  if (detectedNewBasePlans && detectedNewBasePlans.length) {
-    html += detectedNewBasePlans.map(d =>
-      '<div style="background:#e8f0fe;border:1px solid #1a73e8;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;">' +
-      `<strong>"${d.tabName}" looks like a new base plan</strong> — not yet in the houses table.<br>` +
-      `Add it as <strong>${d.guessedLabel}</strong> (key: ${d.guessedKey})? It'll immediately show up in the extension's and webpage's base plan dropdowns, and this tab's pricing/measurements will be imported right after.` +
-      ` <button class="modal-btn btn-confirm" style="margin-top:6px;" onclick="confirmNewBasePlan('${d.tabName.replace(/'/g, "\\'")}')">Add "${d.guessedLabel}" as a base plan</button>` +
-      '</div>'
-    ).join('');
-  }
+  html += newBasePlanBannerHtml(detectedNewBasePlans);
 
   if (renamable.length) {
     html += '<div style="background:#fef7e0;border:1px solid #f9ab00;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;">' +
@@ -2702,6 +2724,7 @@ async function confirmImport() {
   if (document.getElementById('preview-banner').style.display !== 'none') {
     document.getElementById('preview-banner').style.display = 'none';
     document.getElementById('preview-issues-panel').style.display = 'none';
+    document.getElementById('preview-newplan-panel').style.display = 'none';
     document.getElementById('sheet-grid-container').style.outline = '';
     document.getElementById('sheet-grid-container').style.background = '';
     document.getElementById('import-btn').style.display = '';
