@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EZEstimate — Local BuilderTrend Mock</title>
+<title>EZEstimate</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
@@ -178,7 +178,19 @@
     main { max-width: none; padding: 0; }
     .proposal-doc { box-shadow: none; border: none; padding: 0; }
     .doc-fill-input { border-bottom: 1px solid #000; }
-    .proposal-section, .proposal-intro, .proposal-closing { break-inside: avoid-page; }
+    /* An unfilled "Documents Used" line should print as a truly blank
+       line, not the on-screen placeholder hint -- some browsers render
+       an <input>'s placeholder text when printing, which reads as if it
+       were real content ("Plan name / revision…" as an actual answer). */
+    .doc-fill-input::placeholder { color: transparent; }
+    /* Keep a single line item (or a heading) from splitting across a
+       page break, but let a whole section flow across pages normally --
+       forcing an entire multi-row section to stay together pushes it as
+       one block onto the next page the moment it doesn't fully fit,
+       leaving the previous page mostly blank. */
+    .proposal-row, .proposal-hero { break-inside: avoid; }
+    .proposal-section h2, .proposal-intro h1, .proposal-intro h2, .proposal-intro h3,
+    .proposal-closing h2, .proposal-closing h3, .proposal-closing h4 { break-after: avoid; }
   }
 </style>
 </head>
@@ -186,16 +198,14 @@
 
 <header>
   <div class="hdr-logo">EZ</div>
-  <div class="hdr-title">EZEstimate — Local Prototype</div>
-  <div class="hdr-badge">Mock BuilderTrend</div>
+  <div class="hdr-title">EZEstimate</div>
 </header>
 
 <main>
-  <p class="page-eyebrow">Prototype — not connected to real BuilderTrend</p>
-  <h1 class="page-heading">Local Estimate Sandbox</h1>
-  <p class="page-sub">Same pricing engine as the real Quick Quote page (Supabase cost data, markup, allowance markup). Nothing here ever touches BuilderTrend, Google Sheets, or sends real emails.</p>
-  <div class="note-box" id="setup-note">
-    Reads pricing directly from the live Supabase project (read-only) — no sign-in needed. Your inputs and the generated estimate are saved to this browser's local storage only.
+  <h1 class="page-heading no-print">EZEstimate</h1>
+  <p class="page-sub no-print">Enter home measurements to generate a conceptual budget estimate and a client-ready proposal.</p>
+  <div class="note-box no-print" id="setup-note">
+    Your inputs and the generated estimate are saved to this browser's local storage only.
   </div>
 
   <div class="tabs">
