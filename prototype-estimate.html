@@ -659,7 +659,7 @@ function showStatus(msg, type) {
 // function re-verifies the Google ID token server-side (the check here
 // is just so the UI doesn't even try before signing in).
 // ═══════════════════════════════════════════════════════════
-const AI_ALLOWED_EMAIL_DOMAIN = 'kchva.com';
+const AI_ALLOWED_EMAIL_DOMAINS = ['kchva.com', 'urbancoreva.com'];
 function aiDecodeJwt(token) {
   const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
   const json = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
@@ -674,8 +674,8 @@ function handleAiCredentialResponse(response) {
   }
   const email = (payload.email || '').toLowerCase();
   const domain = email.split('@')[1] || '';
-  if (!payload.email_verified || domain !== AI_ALLOWED_EMAIL_DOMAIN) {
-    $('ai-signin-error').textContent = 'Access is restricted to @' + AI_ALLOWED_EMAIL_DOMAIN + ' accounts (signed in as ' + (payload.email || 'unknown') + ').';
+  if (!payload.email_verified || !AI_ALLOWED_EMAIL_DOMAINS.includes(domain)) {
+    $('ai-signin-error').textContent = 'Access is restricted to @' + AI_ALLOWED_EMAIL_DOMAINS.join(' or @') + ' accounts (signed in as ' + (payload.email || 'unknown') + ').';
     $('ai-signin-error').classList.remove('hidden');
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     return;
