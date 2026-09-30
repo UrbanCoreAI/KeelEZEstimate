@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EZEstimate — Local BuilderTrend Mock</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --navy: #1a1a2e; --navy-mid: #24243e; --gold: #e8b84b; --gold-dk: #c9983a;
+    --gold-pale: #fdf5dc; --surface: #f2f4f7; --card: #ffffff; --text: #1e293b;
+    --sub: #475569; --muted: #64748b; --border: #e2e8f0; --border-dk: #cbd5e1;
+    --radius: 10px; --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 18px rgba(0,0,0,.07);
+  }
+  html { font-size: 15px; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--surface); color: var(--text); min-height: 100vh; }
+  .hidden { display: none !important; }
+  header { background: var(--navy); padding: 14px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 200; box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+  .hdr-logo { width: 34px; height: 34px; background: var(--gold); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: var(--navy); flex-shrink: 0; }
+  .hdr-title { font-size: 15px; font-weight: 700; color: #fff; flex: 1; }
+  .hdr-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--navy); background: var(--gold); padding: 3px 9px; border-radius: 20px; }
+  main { max-width: 900px; margin: 0 auto; padding: 28px 20px 80px; }
+  .page-eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
+  .page-heading { font-size: 24px; font-weight: 700; color: var(--navy); letter-spacing: -0.5px; margin-bottom: 4px; }
+  .page-sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+  .note-box { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; border-radius: var(--radius); padding: 12px 16px; font-size: 12.5px; line-height: 1.5; margin-bottom: 20px; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+  .tab-btn { height: 36px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--border-dk); background: var(--card); color: var(--sub); font-size: 13px; font-weight: 600; cursor: pointer; }
+  .tab-btn.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+  .tab-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  @media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); padding: 20px; margin-bottom: 14px; }
+  .section-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .section-label span { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 10px; color: #94a3b8; }
+  .divider-row { height: 1px; background: var(--border); margin: 8px 0 4px; }
+
+  .f-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 38px; border-bottom: 1px solid #f1f5f9; }
+  .f-row:last-child { border-bottom: none; }
+  .f-label { font-size: 13px; color: var(--text); flex: 1; line-height: 1.3; }
+  .f-label em { font-style: normal; font-size: 11px; color: var(--muted); margin-left: 3px; }
+  .f-input, input[type=text], input[type=number], textarea, select {
+    font-family: inherit; border: 1px solid var(--border-dk); border-radius: 6px; padding: 0 9px;
+    font-size: 13px; color: var(--text); background: #fafbfc; outline: none;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .f-input { width: 88px; height: 30px; text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .f-input:focus, input:focus, textarea:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(232,184,75,.18); background: #fff; }
+
+  .lender-label { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
+  .toggle-switch { position: relative; display: inline-block; width: 34px; height: 20px; flex-shrink: 0; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-slider { position: absolute; inset: 0; background: #ccd2da; border-radius: 20px; cursor: pointer; transition: background .15s; }
+  .toggle-slider::before { content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
+  .toggle-switch input:checked + .toggle-slider { background: var(--navy); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(14px); }
+
+  .btn-go { height: 44px; padding: 0 30px; background: var(--gold); color: var(--navy); border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; transition: background 0.15s; }
+  .btn-go:hover { background: var(--gold-dk); }
+  .btn-go:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-ghost { height: 40px; padding: 0 16px; background: transparent; color: var(--muted); border: 1px solid var(--border-dk); border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .btn-ghost:hover { background: var(--surface); color: var(--text); }
+  .btn-dark { height: 40px; padding: 0 20px; background: var(--navy); color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .btn-dark:hover { background: var(--navy-mid); }
+
+  .status { display: none; align-items: center; gap: 8px; padding: 11px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 500; margin-top: 12px; }
+  .status.show { display: flex; }
+  .status.success { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+  .status.error   { background: #fff1f2; border: 1px solid #fda4af; color: #9f1239; }
+  .status.info    { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; }
+
+  .action-bar { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 14px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+  /* ── AI Import card ── */
+  .ai-import-card { background: linear-gradient(135deg, var(--gold-pale), var(--card)); border: 1px solid var(--gold); }
+  .ai-paste-zone { min-height: 84px; max-height: 260px; overflow-y: auto; border: 2px dashed var(--border-dk); border-radius: 8px; padding: 12px 14px; font-size: 13px; color: var(--text); background: #fff; cursor: text; transition: border-color .12s, background .12s; }
+  .ai-paste-zone:focus { outline: none; border-color: var(--gold); background: #fffdf5; }
+  .ai-paste-zone.drag-over { border-color: var(--gold-dk); background: var(--gold-pale); }
+  .ai-paste-zone:empty::before { content: attr(data-placeholder); color: #94a3b8; }
+  .ai-paste-zone img { max-width: 100%; max-height: 200px; display: block; margin: 4px 0; border-radius: 4px; }
+  .ai-status { font-size: 12px; color: var(--muted); }
+  .ai-status.error { color: #9f1239; }
+  .ai-results { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .ai-results.hidden { display: none; }
+  .ai-summary { font-size: 12.5px; color: var(--sub); margin-bottom: 10px; font-style: italic; }
+  .ai-field-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+  @media (max-width: 600px) { .ai-field-list { grid-template-columns: 1fr; } }
+  .ai-field-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; cursor: pointer; }
+  .ai-field-row span { flex: 1; color: var(--sub); }
+  .ai-field-row strong { font-variant-numeric: tabular-nums; }
+  .ai-signin-note { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  .ai-signin-slot.hidden, .ai-body.hidden { display: none; }
+
+  .plan-bar { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 12px 20px; display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .plan-bar label { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .plan-select { height: 34px; min-width: 170px; cursor: pointer; }
+  .plan-status { font-size: 12px; color: var(--muted); }
+  .plan-status.ok { color: #16a34a; }
+  .plan-status.err { color: #9f1239; }
+
+  .site-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; margin-top: 6px; }
+  .site-option-item label { display: block; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+  .site-option-select { width: 100%; height: 32px; background: #fff; font-size: 12.5px; cursor: pointer; }
+
+  .tier-radio-group { display: flex; gap: 14px; margin-top: 2px; }
+  .tier-radio-group label { display: flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 400; color: var(--text); cursor: pointer; }
+  .tier-radio-group input[type="radio"] { cursor: pointer; accent-color: var(--gold-dk); }
+
+  .custom-row { display: flex; align-items: center; gap: 8px; min-height: 36px; border-bottom: 1px solid #f1f5f9; padding: 3px 0; }
+  .custom-row:last-of-type { border-bottom: none; }
+  .custom-input-name { flex: 1; height: 30px; }
+  .custom-input-desc { flex: 1.5; height: 30px; }
+  .custom-price-pre { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+  .custom-input-price { width: 120px; height: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  .btn-add-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; height: 28px; padding: 0 12px; background: transparent; color: var(--muted); border: 1px dashed var(--border-dk); border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; }
+  .btn-add-row:hover { background: var(--surface); color: var(--text); border-color: var(--gold); }
+
+  #sales-notes { width: 100%; min-height: 90px; line-height: 1.6; resize: vertical; }
+
+  /* ── Estimate / Proposal rendering ── */
+  .estimate-meta { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+  .estimate-meta .gen-at { font-size: 12px; color: var(--muted); }
+  .est-group { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 14px; overflow: hidden; }
+  .est-group-hdr { background: var(--navy); color: #fff; padding: 10px 18px; font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; display: flex; justify-content: space-between; align-items: center; }
+  .est-group-hdr .grp-total { font-variant-numeric: tabular-nums; color: var(--gold); }
+  table.est-table { width: 100%; border-collapse: collapse; }
+  table.est-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 10px 18px 6px; border-bottom: 1px solid var(--border); }
+  table.est-table th.num, table.est-table td.num { text-align: right; }
+  table.est-table td { padding: 9px 18px; font-size: 13px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  table.est-table tr:last-child td { border-bottom: none; }
+  .item-desc { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .grand-total-card { background: var(--navy); color: #fff; border-radius: var(--radius); padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .grand-total-card .label { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.65); }
+  .grand-total-card .amount { font-size: 26px; font-weight: 800; color: var(--gold); font-variant-numeric: tabular-nums; }
+
+  /* ── Proposal (client-facing) view ── */
+  .proposal-doc { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); padding: 40px 48px; }
+  .proposal-doc .proposal-sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+  .proposal-section { margin-bottom: 22px; }
+  .proposal-section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--navy); border-bottom: 2px solid var(--gold); padding-bottom: 6px; margin-bottom: 10px; }
+  .proposal-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; padding: 6px 0; border-bottom: 1px solid #f1f5f9; }
+  .proposal-row .name-wrap { flex: 1; }
+  .proposal-row .qty-badge { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+  .proposal-row .amt { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .proposal-grand { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 2px solid var(--navy); }
+  .proposal-grand .label { font-size: 15px; font-weight: 700; color: var(--navy); }
+  .proposal-grand .amount { font-size: 26px; font-weight: 800; color: var(--navy); }
+
+  /* Big bold hero price -- top and center, ahead of everything else */
+  .proposal-hero { text-align: center; padding: 8px 0 28px; border-bottom: 3px solid var(--gold); margin-bottom: 28px; }
+  .proposal-hero .hero-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
+  .proposal-hero .hero-amount { font-size: 44px; font-weight: 800; color: var(--navy); font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+  .proposal-hero .hero-sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  .proposal-intro h1 { font-size: 20px; color: var(--navy); margin-bottom: 2px; }
+  .proposal-intro .purpose { font-size: 12.5px; font-weight: 600; color: var(--gold-dk); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 16px; }
+  .proposal-intro h2, .proposal-closing h2 { font-size: 14px; color: var(--navy); margin: 18px 0 8px; }
+  .proposal-intro h3, .proposal-closing h3 { font-size: 13px; color: var(--navy); margin: 14px 0 6px; }
+  .proposal-intro h4, .proposal-closing h4 { font-size: 12.5px; color: var(--text); margin: 10px 0 4px; }
+  .proposal-intro p, .proposal-closing p { font-size: 13px; line-height: 1.6; color: var(--sub); margin-bottom: 8px; }
+  .proposal-closing ul { margin: 4px 0 8px 20px; padding: 0; }
+  .proposal-closing li { font-size: 13px; line-height: 1.6; color: var(--sub); margin-bottom: 3px; }
+  .proposal-closing { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border); }
+
+  .doc-fill-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .doc-fill-row label { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .doc-fill-input { flex: 1; border: none; border-bottom: 1px solid var(--border-dk); background: transparent; font-size: 13px; padding: 2px 4px; color: var(--text); }
+  .doc-fill-input:focus { outline: none; border-bottom-color: var(--gold); }
+
+  @media print {
+    header, .tabs, .no-print { display: none !important; }
+    body { background: #fff; }
+    main { max-width: none; padding: 0; }
+    .proposal-doc { box-shadow: none; border: none; padding: 0; }
+    .doc-fill-input { border-bottom: 1px solid #000; }
+    .proposal-section, .proposal-intro, .proposal-closing { break-inside: avoid-page; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-logo">EZ</div>
+  <div class="hdr-title">EZEstimate — Local Prototype</div>
+  <div class="hdr-badge">Mock BuilderTrend</div>
+</header>
+
+<main>
+  <p class="page-eyebrow">Prototype — not connected to real BuilderTrend</p>
+  <h1 class="page-heading">Local Estimate Sandbox</h1>
+  <p class="page-sub">Same pricing engine as the real Quick Quote page (Supabase cost data, markup, allowance markup). Nothing here ever touches BuilderTrend, Google Sheets, or sends real emails.</p>
+  <div class="note-box" id="setup-note">
+    Reads pricing directly from the live Supabase project (read-only) — no sign-in needed. Your inputs and the generated estimate are saved to this browser's local storage only.
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-input" type="button">Input</button>
+    <button class="tab-btn" id="tab-estimate" type="button" disabled>Estimate</button>
+    <button class="tab-btn" id="tab-proposal" type="button" disabled>Proposal</button>
+  </div>
+
+  <!-- ═══════════════ INPUT PANEL ═══════════════ -->
+  <div id="panel-input">
+
+    <div class="card ai-import-card">
+      <div class="section-label">AI Import <span>beta — paste a photo or text and it'll pull the numbers out for you</span></div>
+
+      <!-- No page-wide sign-in gate exists in this local dev copy (unlike
+           the deployed EZEstimate site) -- signing in is only needed the
+           moment this specific feature is used, so it stays out of the
+           way of quick local testing otherwise. -->
+      <div id="ai-signin-slot">
+        <p class="ai-signin-note">Sign in with your @kchva.com Google account to use AI Import (the extraction runs server-side; this just proves who's asking).</p>
+        <div id="g_id_onload"
+             data-client_id="453224496219-qbeam8al28h07q5fcppavmg95p66sjup.apps.googleusercontent.com"
+             data-callback="handleAiCredentialResponse"
+             data-auto_select="true"
+             data-itp_support="true">
+        </div>
+        <div class="g_id_signin" data-type="standard" data-shape="rectangular" data-theme="outline" data-text="signin_with" data-size="large"></div>
+        <p id="ai-signin-error" class="ai-status error hidden"></p>
+      </div>
+
+      <div id="ai-body" class="ai-body hidden">
+        <div id="ai-paste-zone" class="ai-paste-zone" contenteditable="true" data-placeholder="Click here, then paste (Ctrl+V) a photo or some text…"></div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+          <button type="button" id="btn-ai-extract" class="btn-go" disabled>Extract →</button>
+          <button type="button" id="btn-ai-clear" class="btn-ghost">Clear</button>
+          <span id="ai-status" class="ai-status"></span>
+        </div>
+        <div id="ai-results" class="ai-results hidden"></div>
+      </div>
+    </div>
+
+    <div class="plan-bar">
+      <label for="plan-select">Load Base Plan:</label>
+      <select id="plan-select" class="plan-select">
+        <option value="">— Select a plan —</option>
+      </select>
+      <span id="plan-status" class="plan-status hidden"></span>
+    </div>
+
+    <div class="form-grid">
+      <div class="card">
+        <div class="section-label">Building Areas <span>Square Feet</span></div>
+        <div class="f-row"><span class="f-label">1st Floor</span><input class="f-input jq-input" type="number" data-field="floor1_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">2nd Floor</span><input class="f-input jq-input" type="number" data-field="floor2_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">3rd Floor</span><input class="f-input jq-input" type="number" data-field="floor3_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Attic w/ Storage</span><input class="f-input jq-input" type="number" data-field="attic_storage_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Habitable Attic</span><input class="f-input jq-input" type="number" data-field="habitable_attic_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Front Porch</span><input class="f-input jq-input" type="number" data-field="front_porch_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Rear Porch</span><input class="f-input jq-input" type="number" data-field="rear_porch_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Rear Deck</span><input class="f-input jq-input" type="number" data-field="rear_deck_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Garage</span><input class="f-input jq-input" type="number" data-field="garage_sf" placeholder="0" min="0"></div>
+        <div class="divider-row"></div>
+        <div class="f-row"><span class="f-label">Cabinets <em>LF</em></span><input class="f-input jq-input" type="number" data-field="cabinets_lf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">Countertops <em>LF</em></span><input class="f-input jq-input" type="number" data-field="countertop_lf" placeholder="0" min="0"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-label">Counts &amp; Areas</div>
+        <div class="f-row"><span class="f-label"># Exterior Doors</span><input class="f-input jq-input" type="number" data-field="exterior_doors" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Windows</span><input class="f-input jq-input" type="number" data-field="windows" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Baths</span><input class="f-input jq-input" type="number" data-field="baths" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Staircases</span><input class="f-input jq-input" type="number" data-field="staircases" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Porch Columns</span><input class="f-input jq-input" type="number" data-field="porch_columns" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Garage Doors</span><input class="f-input jq-input" type="number" data-field="garage_doors" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label"># Interior Doors</span><input class="f-input jq-input" type="number" data-field="interior_doors" placeholder="0" min="0"></div>
+        <div class="divider-row"></div>
+        <div class="f-row"><span class="f-label">SF Carpet</span><input class="f-input jq-input" type="number" data-field="carpet_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">SF Hardwood</span><input class="f-input jq-input" type="number" data-field="hardwood_sf" placeholder="0" min="0"></div>
+        <div class="f-row"><span class="f-label">SF Tile</span><input class="f-input jq-input" type="number" data-field="tile_sf" placeholder="0" min="0"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">Basement <span>Priced separately — becomes its own line item(s)</span></div>
+      <div class="f-row"><span class="f-label">Finished Basement (SF)</span><input type="number" id="basement-finished-sf" placeholder="0" min="0"></div>
+      <div class="f-row"><span class="f-label">Finished Basement Description</span><input type="text" id="basement-finished-desc" placeholder="Description…"></div>
+      <div class="f-row"><span class="f-label">Unfinished Basement (SF)</span><input type="number" id="basement-unfinished-sf" placeholder="0" min="0"></div>
+      <div class="f-row"><span class="f-label">Unfinished Basement Description</span><input type="text" id="basement-unfinished-desc" placeholder="Description…"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">Allowance Upgrades <span>Optional — Good/Better/Best pricing tier per allowance</span></div>
+      <div class="site-options-grid" id="tier-grid"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">Custom Selection Allowances <span>Optional — becomes its own line items</span></div>
+      <div id="custom-rows"></div>
+      <button type="button" id="btn-add-custom-row" class="btn-add-row">+ Add row</button>
+    </div>
+
+    <div class="card">
+      <div class="section-label">Site Options <span>Written to the estimate as their own line items</span></div>
+      <div class="site-options-grid">
+        <div class="site-option-item"><label>Sewer</label>
+          <select id="so-sewer" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="City (No Septic)">City (No Septic)</option>
+            <option value="Conventional Septic">Conventional Septic</option>
+            <option value="Engineered Septic">Engineered Septic</option>
+          </select></div>
+        <div class="site-option-item"><label>Water</label>
+          <select id="so-water" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="City Water">City Water</option>
+            <option value="Well">Well</option>
+          </select></div>
+        <div class="site-option-item"><label>Municipal Tap Fees</label>
+          <select id="so-tap" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="None (Well/Septic)">None (Well/Septic)</option>
+            <option value="Standard (12K)">Standard (12K)</option>
+            <option value="High (18K)">High (18K)</option>
+          </select></div>
+        <div class="site-option-item"><label>Lot Clearing</label>
+          <select id="so-clearing" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="Light">Light</option>
+            <option value="Moderate">Moderate</option>
+            <option value="Heavy">Heavy</option>
+          </select></div>
+        <div class="site-option-item"><label>Driveway</label>
+          <select id="so-driveway" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="Short Gravel">Short Gravel</option>
+            <option value="Standard (Gravel)">Standard (Gravel)</option>
+            <option value="Long Gravel">Long Gravel</option>
+            <option value="Asphalt">Asphalt</option>
+          </select></div>
+        <div class="site-option-item"><label>Landscaping</label>
+          <select id="so-landscaping" class="site-option-select">
+            <option value="">— Select —</option>
+            <option value="Basic">Basic</option>
+            <option value="Standard">Standard</option>
+            <option value="Extensive">Extensive</option>
+          </select></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">Sales Notes <span>internal use only — saved locally</span></div>
+      <textarea id="sales-notes" placeholder="Notes for this estimate…"></textarea>
+    </div>
+
+    <div class="action-bar">
+      <label class="lender-label">
+        <input type="checkbox" id="chk-lender">
+        Preferred Lender Incentive
+      </label>
+      <button id="btn-write-estimate" class="btn-go">Write to Estimate →</button>
+      <button id="btn-clear" class="btn-ghost">Clear</button>
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <!-- ═══════════════ ESTIMATE PANEL ═══════════════ -->
+  <div id="panel-estimate" class="hidden">
+    <div class="estimate-meta">
+      <span class="gen-at" id="estimate-generated-at"></span>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <label class="lender-label no-print">
+          <span class="toggle-switch"><input type="checkbox" id="chk-adminview"><span class="toggle-slider"></span></span>
+          Admin View
+        </label>
+        <label class="lender-label no-print hidden" id="premarkup-toggle-wrap">
+          <span class="toggle-switch"><input type="checkbox" id="chk-premarkup"><span class="toggle-slider"></span></span>
+          Show pre-markup prices
+        </label>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-dark no-print" id="btn-goto-proposal" type="button">View Client Proposal →</button>
+          <button class="btn-ghost no-print" id="btn-back-to-input" type="button">← Edit Inputs</button>
+        </div>
+      </div>
+    </div>
+    <div id="estimate-groups"></div>
+    <div class="grand-total-card">
+      <span class="label" id="estimate-grand-total-label">Total Estimate</span>
+      <span class="amount" id="estimate-grand-total">$0.00</span>
+    </div>
+  </div>
+
+  <!-- ═══════════════ PROPOSAL PANEL ═══════════════ -->
+  <div id="panel-proposal" class="hidden">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:12px;" class="no-print">
+      <button class="btn-dark" id="btn-print-proposal" type="button">Print / Save PDF</button>
+      <button class="btn-ghost" id="btn-back-to-estimate" type="button">← Back to Estimate</button>
+    </div>
+    <div class="proposal-doc" id="proposal-doc"></div>
+  </div>
+
+</main>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// Same Supabase project the real webpage/admin/extension use.
+// Read-only from here — this prototype never writes to any table.
+// ═══════════════════════════════════════════════════════════
+const SUPABASE_URL  = 'https://fujddlemswhbdqrhpekt.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1amRkbGVtc3doYmRxcmhwZWt0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMTYzODcsImV4cCI6MjA5OTg5MjM4N30.pR2IINeUB6RDAXBG6IDHrLc3diW8TNYYN1jAIEdXFm4';
+const sbClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON) : null;
+
+const LS_INPUTS_KEY   = 'keel-mock-estimate-inputs';
+const LS_ESTIMATE_KEY = 'keel-mock-estimate-result';
+
+function $(id) { return document.getElementById(id); }
+
+// ── Same measurement engine as index.html ──────────────────────────────
+const ROW_TO_FIELD = {
+  3: 'basement_sf', 4: 'floor1_sf', 5: 'floor2_sf', 6: 'floor3_sf',
+  7: 'attic_storage_sf', 8: 'habitable_attic_sf',
+  9: 'front_porch_sf', 10: 'rear_porch_sf', 11: 'rear_deck_sf', 12: 'garage_sf',
+  18: 'exterior_doors', 19: 'windows', 20: 'baths',
+  21: 'cabinets_lf', 22: 'countertop_lf', 23: 'staircases',
+  24: 'porch_columns', 25: 'garage_doors', 26: 'interior_doors',
+  27: 'carpet_sf', 28: 'hardwood_sf', 29: 'tile_sf'
+};
+const TOTAL_AREA_ROWS = [3,4,5,6,7,8,9,10,11,12];
+function totalAreaSum(jq) {
+  return TOTAL_AREA_ROWS.reduce((sum, row) => sum + (Number(jq[ROW_TO_FIELD[row]]) || 0), 0);
+}
+const CELL_REF_RE = /\$?I\$?(\d+)/g;
+function evaluateQuantityFormula(formula, jq) {
+  const f = (formula || '').trim();
+  if (f === '') return 0;
+  if (!f.startsWith('=')) { const n = Number(f); return isFinite(n) ? n : 0; }
+  const body = f.slice(1);
+  let total = 0, m;
+  CELL_REF_RE.lastIndex = 0;
+  while ((m = CELL_REF_RE.exec(body)) !== null) {
+    const rowN = parseInt(m[1], 10);
+    if (rowN === 13) { total += totalAreaSum(jq); continue; }
+    const field = ROW_TO_FIELD[rowN];
+    total += field ? (Number(jq[field]) || 0) : 0;
+  }
+  return total;
+}
+function buildJobQuantitiesFromInputs() {
+  const jq = {};
+  document.querySelectorAll('.jq-input').forEach(inp => { jq[inp.dataset.field] = parseFloat(inp.value) || 0; });
+  const finBasEl = $('basement-finished-sf');
+  const unfBasEl = $('basement-unfinished-sf');
+  jq.basement_sf = (parseFloat(finBasEl.value) || 0) + (parseFloat(unfBasEl.value) || 0);
+  return jq;
+}
+async function computeCellsFromSupabase(neededRows) {
+  const jq = buildJobQuantitiesFromInputs();
+  const codes = neededRows.map(String);
+  const { data, error } = await sbClient.from('cost_items').select('cost_code,item_name,quantity_formula').in('cost_code', codes);
+  if (error) throw new Error('Supabase read failed: ' + error.message);
+  const byCode = {};
+  (data || []).forEach(r => { byCode[r.cost_code] = r; });
+  const c = {
+    I13: totalAreaSum(jq),
+    I9: jq.front_porch_sf || 0, I10: jq.rear_porch_sf || 0, I11: jq.rear_deck_sf || 0,
+    I18: jq.exterior_doors || 0, I19: jq.windows || 0, I20: jq.baths || 0, I23: jq.staircases || 0,
+    I24: jq.porch_columns || 0, I26: jq.interior_doors || 0
+  };
+  neededRows.forEach(row => {
+    const item = byCode[String(row)];
+    if (item === undefined) throw new Error('cost_items row ' + row + ' not found in Supabase.');
+    c['D' + row] = evaluateQuantityFormula(item.quantity_formula, jq);
+  });
+  return c;
+}
+
+// ── Same rate resolver as index.html's resolveRateWeb ──────────────────
+const ITEM_NAME_TO_COST_ITEM_NAME_WEB = {
+  'Appliance Allowance': 'Appliances Allowance', 'Cabinet Allowance': 'Cabinets Allowance',
+  'Carpet Allowance': 'Carpets Allowance', 'Countertop Allowance': 'Counterop Allowance',
+  'Hardwood Flooring Allowance': 'Hardwood Allowance', 'Tile Allowance': 'Tile Selection Allowance',
+  'Garage Door': 'Garage Overhead Doors', 'Realtor Fees': 'SALES TO EDIT - REALTOR',
+  'Interior Doors': 'Interior Door'
+};
+function roundUpToCent(n) { return (Math.ceil((Number(n) || 0) * 100 - 1e-6) / 100) + 0; }
+const ITEMSUM_RE_WEB = /^=itemsum\((.*)\)$/i;
+const HOUSE_REF_RE_WEB = /'([^']+)'!F\d+/g;
+function resolveRateWeb(item, byName, tabToKey, jq, selectedHouseKey, seen) {
+  seen = seen || new Set();
+  if (!item || seen.has(item.id)) return 0;
+  seen.add(item.id);
+  const f = (item.unit_cost_formula || '').trim();
+  const m = ITEMSUM_RE_WEB.exec(f);
+  if (m) {
+    const names = m[1].split('|').map(s => s.trim()).filter(Boolean);
+    let total = 0;
+    names.forEach(nm => {
+      const ref = byName[nm.toLowerCase()];
+      if (ref) total += resolveRateWeb(ref, byName, tabToKey, jq, selectedHouseKey, seen);
+    });
+    return total;
+  }
+  const rates = item.house_rates || [];
+  function unitCostOf(hr) { return (hr.quantity > 0) ? (hr.amount / hr.quantity) : (hr.amount || 0); }
+  if (selectedHouseKey) {
+    const hr = rates.find(h => h.house === selectedHouseKey);
+    return hr ? unitCostOf(hr) : 0;
+  }
+  const keys = [];
+  let hm;
+  HOUSE_REF_RE_WEB.lastIndex = 0;
+  while ((hm = HOUSE_REF_RE_WEB.exec(f)) !== null) {
+    const house = ALL_HOUSES.find(h => tabToKey(h) === hm[1]);
+    if (house) keys.push(house.key);
+  }
+  const included = keys.map(k => rates.find(h => h.house === k)).filter(Boolean);
+  if (!included.length) return 0;
+  return included.reduce((s, h) => s + unitCostOf(h), 0) / included.length;
+}
+async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
+  const { data: rows, error } = await sbClient
+    .from('cost_items')
+    .select('id,item_name,is_fixed,quantity_formula,unit_cost_formula,house_rates(house,amount,quantity)');
+  if (error) throw new Error('Supabase cost_items read failed: ' + error.message);
+  const byName = {};
+  (rows || []).forEach(r => { byName[r.item_name.toLowerCase()] = r; });
+  const tabToKey = h => h.tab_name || ('2026 MASTER PLAN ' + h.label.toUpperCase());
+  const jq = buildJobQuantitiesFromInputs();
+  const result = {};
+  itemNames.forEach(originalName => {
+    if (originalName === 'Number of Baths') {
+      const roughIn = byName['plumbing labor rough in (60%)'];
+      const trimOut = byName['plumbing trim out (40%)'];
+      if (!roughIn || !trimOut) { result[originalName] = undefined; return; }
+      const rate = resolveRateWeb(roughIn, byName, tabToKey, jq, selectedHouseKey)
+                 + resolveRateWeb(trimOut, byName, tabToKey, jq, selectedHouseKey);
+      result[originalName] = roundUpToCent(rate);
+      return;
+    }
+    const lookupName = ITEM_NAME_TO_COST_ITEM_NAME_WEB[originalName] || originalName;
+    const row = byName[lookupName.toLowerCase()];
+    result[originalName] = row ? roundUpToCent(resolveRateWeb(row, byName, tabToKey, jq, selectedHouseKey)) : undefined;
+  });
+  return result;
+}
+async function lookupSiteOptionCost(category, optionLabel) {
+  const { data, error } = await sbClient.from('site_options').select('option_label,cost').eq('category', category);
+  if (error) throw new Error('Supabase site_options read failed: ' + error.message);
+  const match = (data || []).find(r => (r.option_label || '').trim().toLowerCase() === optionLabel.trim().toLowerCase());
+  return match ? Number(match.cost) || 0 : undefined;
+}
+function computeBasementLineItems(finishedSf, unfinishedSf, pricing) {
+  const items = [];
+  if (finishedSf > 0 || unfinishedSf > 0) items.push({ name: 'Basement Fixed Cost', unitCost: pricing.fixed_cost_per_house, quantity: 1 });
+  if (unfinishedSf > 0) items.push({ name: 'Unfinished Basement Allowance', unitCost: pricing.shell_cost_per_sf, quantity: unfinishedSf });
+  if (finishedSf > 0) items.push({ name: 'Finished Basement Allowance', unitCost: pricing.shell_cost_per_sf + pricing.finish_cost_per_sf, quantity: finishedSf });
+  return items;
+}
+
+// ── Which items get Allowance Markup instead of the regular Markup Percent
+// (mirrors tabpicker.js's ALLOWANCE_ITEM_NAMES) ─────────────────────────
+const ALLOWANCE_ITEM_NAMES = {
+  'Accessories Allowance': true, 'Appliance Allowance': true, 'Cabinet Allowance': true,
+  'Carpet Allowance': true, 'Countertop Allowance': true, 'Hardwood Flooring Allowance': true,
+  'Lighting Fixture Allowance': true, 'Plumbing Fixture Allowance': true, 'Tile Allowance': true,
+  'Clearing Allowance': true, 'Driveway Allowance': true, 'Landscaping Allowance': true,
+  'Tap Fees': true
+};
+
+// ── Base house plan dropdown ─────────────────────────────────────────
+let ALL_HOUSES = [];
+let selectedBasePlanHouse = null;
+const DATA_KEY_TO_FIELD = {};
+Object.values(ROW_TO_FIELD).forEach(f => { DATA_KEY_TO_FIELD[f] = f; });
+
+async function loadHouses() {
+  const { data, error } = await sbClient.from('houses').select('*').order('sort_order');
+  if (error) { console.error('Could not load houses:', error.message); return; }
+  ALL_HOUSES = data || [];
+  const opts = ALL_HOUSES.map(h => `<option value="${h.key}">${h.label}</option>`).join('');
+  $('plan-select').innerHTML = '<option value="">— Select a plan —</option>' + opts;
+}
+$('plan-select').addEventListener('change', async () => {
+  const key = $('plan-select').value;
+  const statusEl = $('plan-status');
+  if (!key) { selectedBasePlanHouse = null; statusEl.classList.add('hidden'); return; }
+  statusEl.classList.remove('hidden');
+  statusEl.className = 'plan-status';
+  statusEl.textContent = 'Loading…';
+  try {
+    const { data, error } = await sbClient.from('reference_house_measurements').select('*').eq('house', key).single();
+    if (error || !data) throw new Error('Reference house not found — run "Seed Reference Houses" in the admin tool first.');
+    document.querySelectorAll('.jq-input').forEach(inp => {
+      const val = Number(data[inp.dataset.field]) || 0;
+      inp.value = val > 0 ? val : '';
+    });
+    selectedBasePlanHouse = key;
+    const label = (ALL_HOUSES.find(h => h.key === key) || {}).label || key;
+    statusEl.textContent = '✓ ' + label + ' loaded';
+    statusEl.className = 'plan-status ok';
+  } catch (e) {
+    selectedBasePlanHouse = null;
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'plan-status err';
+  }
+});
+
+// ── Allowance tier radios (Good/Better/Best) ────────────────────────────
+const TIER_LABELS = [
+  ['Accessories Allowance', 'Accessories'], ['Appliance Allowance', 'Appliance'],
+  ['Cabinet Allowance', 'Cabinet'], ['Carpet Allowance', 'Carpet'],
+  ['Countertop Allowance', 'Countertop'], ['Hardwood Flooring Allowance', 'Hardwood Flooring'],
+  ['Lighting Fixture Allowance', 'Lighting Fixture'], ['Plumbing Fixture Allowance', 'Plumbing Fixture'],
+  ['Tile Allowance', 'Tile']
+];
+$('tier-grid').innerHTML = TIER_LABELS.map(([itemName, label], i) => `
+  <div class="site-option-item">
+    <label>${label}</label>
+    <div class="tier-radio-group">
+      <label><input type="radio" name="web-tier-${i}" class="web-tier-select" data-item="${itemName}" value="good" checked>Good</label>
+      <label><input type="radio" name="web-tier-${i}" class="web-tier-select" data-item="${itemName}" value="better">Better</label>
+      <label><input type="radio" name="web-tier-${i}" class="web-tier-select" data-item="${itemName}" value="best">Best</label>
+    </div>
+  </div>
+`).join('');
+
+// ── Custom allowance rows ────────────────────────────────────────────
+function makeCustomRow() {
+  const row = document.createElement('div');
+  row.className = 'custom-row';
+  row.innerHTML = '<input class="custom-input-name" type="text" placeholder="Item name…">' +
+                  '<input class="custom-input-desc" type="text" placeholder="Description…">' +
+                  '<span class="custom-price-pre">$</span>' +
+                  '<input class="custom-input-price" type="number" placeholder="0.00" min="0" step="0.01">';
+  return row;
+}
+for (let i = 0; i < 5; i++) $('custom-rows').appendChild(makeCustomRow());
+$('btn-add-custom-row').addEventListener('click', () => $('custom-rows').appendChild(makeCustomRow()));
+
+// ── Status helper ────────────────────────────────────────────────────
+function showStatus(msg, type) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = 'status show ' + (type || 'info');
+}
+
+// ═══════════════════════════════════════════════════════════
+// AI Import -- paste a photo and/or text, a Supabase Edge Function
+// (parse-estimate-input) reads it via OpenAI and hands back only the
+// known measurement fields it's confident about. The OpenAI key never
+// reaches this page -- it lives in that function's own secret, and the
+// function re-verifies the Google ID token server-side (the check here
+// is just so the UI doesn't even try before signing in).
+// ═══════════════════════════════════════════════════════════
+const AI_ALLOWED_EMAIL_DOMAIN = 'kchva.com';
+function aiDecodeJwt(token) {
+  const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  const json = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+  return JSON.parse(json);
+}
+function handleAiCredentialResponse(response) {
+  let payload;
+  try { payload = aiDecodeJwt(response.credential); } catch (e) {
+    $('ai-signin-error').textContent = 'Could not read the sign-in response — please try again.';
+    $('ai-signin-error').classList.remove('hidden');
+    return;
+  }
+  const email = (payload.email || '').toLowerCase();
+  const domain = email.split('@')[1] || '';
+  if (!payload.email_verified || domain !== AI_ALLOWED_EMAIL_DOMAIN) {
+    $('ai-signin-error').textContent = 'Access is restricted to @' + AI_ALLOWED_EMAIL_DOMAIN + ' accounts (signed in as ' + (payload.email || 'unknown') + ').';
+    $('ai-signin-error').classList.remove('hidden');
+    if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+    return;
+  }
+  window.currentGoogleIdToken = response.credential;
+  $('ai-signin-error').classList.add('hidden');
+  $('ai-signin-slot').classList.add('hidden');
+  $('ai-body').classList.remove('hidden');
+}
+
+const AI_FIELD_LABELS = {
+  floor1_sf: '1st Floor (SF)', floor2_sf: '2nd Floor (SF)', floor3_sf: '3rd Floor (SF)',
+  attic_storage_sf: 'Attic w/ Storage (SF)', habitable_attic_sf: 'Habitable Attic (SF)',
+  front_porch_sf: 'Front Porch (SF)', rear_porch_sf: 'Rear Porch (SF)', rear_deck_sf: 'Rear Deck (SF)',
+  garage_sf: 'Garage (SF)', cabinets_lf: 'Cabinets (LF)', countertop_lf: 'Countertops (LF)',
+  exterior_doors: '# Exterior Doors', windows: '# Windows', baths: '# Baths', staircases: '# Staircases',
+  porch_columns: '# Porch Columns', garage_doors: '# Garage Doors', interior_doors: '# Interior Doors',
+  carpet_sf: 'SF Carpet', hardwood_sf: 'SF Hardwood', tile_sf: 'SF Tile'
+};
+const aiPasteZone = $('ai-paste-zone');
+const btnAiExtract = $('btn-ai-extract');
+
+function aiZoneHasContent() {
+  return aiPasteZone.textContent.trim().length > 0 || !!aiPasteZone.querySelector('img');
+}
+function updateAiExtractButtonState() { btnAiExtract.disabled = !aiZoneHasContent(); }
+aiPasteZone.addEventListener('input', updateAiExtractButtonState);
+aiPasteZone.addEventListener('paste', () => setTimeout(updateAiExtractButtonState, 0));
+aiPasteZone.addEventListener('dragover', (e) => { e.preventDefault(); aiPasteZone.classList.add('drag-over'); });
+aiPasteZone.addEventListener('dragleave', () => aiPasteZone.classList.remove('drag-over'));
+aiPasteZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  aiPasteZone.classList.remove('drag-over');
+  const file = (e.dataTransfer.files || [])[0];
+  if (file && file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = document.createElement('img');
+      img.src = reader.result;
+      aiPasteZone.appendChild(img);
+      updateAiExtractButtonState();
+    };
+    reader.readAsDataURL(file);
+  }
+});
+$('btn-ai-clear').addEventListener('click', () => {
+  aiPasteZone.innerHTML = '';
+  $('ai-results').classList.add('hidden');
+  $('ai-results').innerHTML = '';
+  $('ai-status').textContent = '';
+  updateAiExtractButtonState();
+});
+
+async function extractFromPasteZone() {
+  const img = aiPasteZone.querySelector('img');
+  const imageDataUrl = img ? img.src : '';
+  const clone = aiPasteZone.cloneNode(true);
+  clone.querySelectorAll('img').forEach(i => i.remove());
+  const text = (clone.innerText || clone.textContent || '').trim();
+  if (!text && !imageDataUrl) return;
+
+  btnAiExtract.disabled = true;
+  btnAiExtract.textContent = 'Reading…';
+  const statusEl = $('ai-status');
+  statusEl.textContent = '';
+  statusEl.className = 'ai-status';
+  try {
+    const res = await fetch(SUPABASE_URL + '/functions/v1/parse-estimate-input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: window.currentGoogleIdToken || '', text, imageDataUrl })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
+    renderAiResults(data.fields || {}, data.summary || '');
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'ai-status error';
+  } finally {
+    btnAiExtract.disabled = !aiZoneHasContent();
+    btnAiExtract.textContent = 'Extract →';
+  }
+}
+btnAiExtract.addEventListener('click', extractFromPasteZone);
+
+function renderAiResults(fields, summary) {
+  const wrap = $('ai-results');
+  const keys = Object.keys(fields);
+  if (!keys.length) {
+    wrap.innerHTML = `<p class="ai-summary">${summary || 'Nothing usable was found in that.'}</p>`;
+    wrap.classList.remove('hidden');
+    return;
+  }
+  wrap.innerHTML = `
+    <p class="ai-summary">${summary}</p>
+    <div class="ai-field-list">
+      ${keys.map(k => `
+        <label class="ai-field-row">
+          <input type="checkbox" checked data-key="${k}">
+          <span>${AI_FIELD_LABELS[k] || k}</span>
+          <strong>${fields[k]}</strong>
+        </label>
+      `).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button type="button" class="btn-go" id="btn-ai-apply">Apply to Form</button>
+      <button type="button" class="btn-ghost" id="btn-ai-discard">Discard</button>
+    </div>
+  `;
+  wrap.classList.remove('hidden');
+  $('btn-ai-apply').addEventListener('click', () => {
+    let count = 0;
+    wrap.querySelectorAll('input[type=checkbox]:checked').forEach(chk => {
+      const key = chk.dataset.key;
+      const el = document.querySelector(`.jq-input[data-field="${key}"]`);
+      if (el) { el.value = fields[key]; count++; }
+    });
+    saveInputsToStorage();
+    aiPasteZone.innerHTML = '';
+    wrap.classList.add('hidden');
+    wrap.innerHTML = '';
+    updateAiExtractButtonState();
+    showStatus('✓ Applied ' + count + ' AI-extracted value(s) to the form.', 'success');
+  });
+  $('btn-ai-discard').addEventListener('click', () => { wrap.classList.add('hidden'); wrap.innerHTML = ''; });
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────
+function showPanel(which) {
+  $('panel-input').classList.toggle('hidden', which !== 'input');
+  $('panel-estimate').classList.toggle('hidden', which !== 'estimate');
+  $('panel-proposal').classList.toggle('hidden', which !== 'proposal');
+  $('tab-input').classList.toggle('active', which === 'input');
+  $('tab-estimate').classList.toggle('active', which === 'estimate');
+  $('tab-proposal').classList.toggle('active', which === 'proposal');
+}
+$('tab-input').addEventListener('click', () => showPanel('input'));
+$('tab-estimate').addEventListener('click', () => { if (!$('tab-estimate').disabled) showPanel('estimate'); });
+$('tab-proposal').addEventListener('click', () => { if (!$('tab-proposal').disabled) showPanel('proposal'); });
+$('btn-back-to-input').addEventListener('click', () => showPanel('input'));
+$('btn-goto-proposal').addEventListener('click', () => showPanel('proposal'));
+$('btn-back-to-estimate').addEventListener('click', () => showPanel('estimate'));
+$('btn-print-proposal').addEventListener('click', () => window.print());
+
+// ── Persistence: inputs ───────────────────────────────────────────────
+function saveInputsToStorage() {
+  const state = { jq: {}, basement: {}, custom: [], site: {}, tiers: {}, lender: false, notes: '', plan: selectedBasePlanHouse };
+  document.querySelectorAll('.jq-input').forEach(inp => { state.jq[inp.dataset.field] = inp.value; });
+  state.basement = {
+    finishedSf: $('basement-finished-sf').value, finishedDesc: $('basement-finished-desc').value,
+    unfinishedSf: $('basement-unfinished-sf').value, unfinishedDesc: $('basement-unfinished-desc').value
+  };
+  document.querySelectorAll('#custom-rows .custom-row').forEach(row => {
+    state.custom.push({
+      name: row.querySelector('.custom-input-name').value,
+      desc: row.querySelector('.custom-input-desc').value,
+      price: row.querySelector('.custom-input-price').value
+    });
+  });
+  ['so-sewer','so-water','so-tap','so-clearing','so-driveway','so-landscaping'].forEach(id => { state.site[id] = $(id).value; });
+  document.querySelectorAll('.web-tier-select:checked').forEach(el => { state.tiers[el.dataset.item] = el.value; });
+  state.lender = $('chk-lender').checked;
+  state.notes = $('sales-notes').value;
+  localStorage.setItem(LS_INPUTS_KEY, JSON.stringify(state));
+}
+function restoreInputsFromStorage() {
+  let state;
+  try { state = JSON.parse(localStorage.getItem(LS_INPUTS_KEY) || 'null'); } catch (e) { state = null; }
+  if (!state) return;
+  document.querySelectorAll('.jq-input').forEach(inp => { if (state.jq[inp.dataset.field]) inp.value = state.jq[inp.dataset.field]; });
+  if (state.basement) {
+    $('basement-finished-sf').value = state.basement.finishedSf || '';
+    $('basement-finished-desc').value = state.basement.finishedDesc || '';
+    $('basement-unfinished-sf').value = state.basement.unfinishedSf || '';
+    $('basement-unfinished-desc').value = state.basement.unfinishedDesc || '';
+  }
+  (state.custom || []).forEach((c, i) => {
+    const row = document.querySelectorAll('#custom-rows .custom-row')[i];
+    if (!row) return;
+    row.querySelector('.custom-input-name').value = c.name || '';
+    row.querySelector('.custom-input-desc').value = c.desc || '';
+    row.querySelector('.custom-input-price').value = c.price || '';
+  });
+  Object.keys(state.site || {}).forEach(id => { const el = $(id); if (el) el.value = state.site[id]; });
+  Object.keys(state.tiers || {}).forEach(itemName => {
+    const tier = state.tiers[itemName];
+    const el = document.querySelector(`.web-tier-select[data-item="${itemName}"][value="${tier}"]`);
+    if (el) el.checked = true;
+  });
+  $('chk-lender').checked = !!state.lender;
+  $('sales-notes').value = state.notes || '';
+}
+document.addEventListener('input', () => saveInputsToStorage());
+document.addEventListener('change', () => saveInputsToStorage());
+
+// Pre-fills each Site Options dropdown with the most common real-world
+// choice rather than a blank "— Select —" — applied to any select still
+// blank after restoreInputsFromStorage() (a brand-new form, or one where
+// Clear was just pressed), never overwriting an already-chosen value.
+const SITE_OPTION_DEFAULTS = {
+  'so-sewer': 'City (No Septic)', 'so-water': 'City Water', 'so-tap': 'Standard (12K)',
+  'so-clearing': 'Light', 'so-driveway': 'Standard (Gravel)', 'so-landscaping': 'Basic'
+};
+function applySiteOptionDefaults() {
+  Object.keys(SITE_OPTION_DEFAULTS).forEach(id => {
+    const el = $(id);
+    if (el && !el.value) el.value = SITE_OPTION_DEFAULTS[id];
+  });
+}
+
+$('btn-clear').addEventListener('click', () => {
+  if (!confirm('Clear all inputs on this form?')) return;
+  document.querySelectorAll('.jq-input, .custom-input-name, .custom-input-desc, .custom-input-price, #basement-finished-sf, #basement-finished-desc, #basement-unfinished-sf, #basement-unfinished-desc, #sales-notes').forEach(el => { el.value = ''; });
+  document.querySelectorAll('.site-option-select').forEach(el => { el.value = ''; });
+  applySiteOptionDefaults();
+  $('chk-lender').checked = false;
+  localStorage.removeItem(LS_INPUTS_KEY);
+  saveInputsToStorage();
+});
+
+// ═══════════════════════════════════════════════════════════
+// Write to Estimate — mirrors index.html's btnConfirm handler,
+// then renders into the mock BuilderTrend groups instead of
+// handing off to the Chrome extension.
+// ═══════════════════════════════════════════════════════════
+const GROUP_ORDER = ['Base House Pricing', 'Selection Allowances', 'Site Allowances', 'Custom Selection Allowances', 'Preferred Lender Incentive'];
+
+$('btn-write-estimate').addEventListener('click', async () => {
+  const btn = $('btn-write-estimate');
+  btn.disabled = true;
+  btn.textContent = 'Computing…';
+  showStatus('Computing estimate from Supabase…', 'info');
+  try {
+    if (!sbClient) throw new Error('Supabase client failed to load — check your network connection.');
+
+    const c = await computeCellsFromSupabase([32,46,50,56,59,62,68,86,88,89,90,91,92,93,94,99]);
+    const n = v => parseFloat(String(v || '0').replace(/[^0-9.-]/g, '')) || 0;
+    const lender = $('chk-lender').checked;
+
+    const items = [
+      { name: 'Total Fixed Cost', qty: 1, group: 'Base House Pricing' },
+      { name: 'Total Finished SF & Unfinished (Under Roof)', qty: n(c['I13']), group: 'Base House Pricing' },
+      { name: 'Total Finished SF', qty: n(c['D46']), group: 'Base House Pricing' },
+      { name: 'Total Finished SF & Unfinished SF (Under Roof Excluding Porches)', qty: n(c['D32']), group: 'Base House Pricing' },
+      { name: 'Total Garage SF', qty: n(c['D62']), group: 'Base House Pricing' },
+      { name: 'Total 1st Floor Finished, 1st Floor Unfinished & Garage', qty: n(c['D56']), group: 'Base House Pricing' },
+      { name: 'Total 1st Floor, Garage & Porch SF', qty: n(c['D50']), group: 'Base House Pricing' },
+      { name: 'Total Finished 1st Floor SF', qty: n(c['D59']), group: 'Base House Pricing' },
+      { name: 'Total for Decks & Porches', qty: n(c['I9']) + n(c['I10']) + n(c['I11']), group: 'Base House Pricing' },
+      { name: 'Interior Stairs', qty: n(c['I23']), group: 'Base House Pricing' },
+      { name: 'Exterior Doors', qty: n(c['I18']), group: 'Base House Pricing' },
+      { name: 'Windows', qty: n(c['I19']), group: 'Base House Pricing' },
+      { name: 'Porch Columns', qty: n(c['I24']), group: 'Base House Pricing' },
+      { name: 'Interior Doors', qty: n(c['I26']), group: 'Base House Pricing' },
+      { name: 'Garage Door', qty: n(c['D68']), group: 'Base House Pricing' },
+      { name: 'Number of Baths', qty: n(c['I20']), group: 'Base House Pricing' },
+      { name: 'Accessories Allowance', qty: n(c['D86']), group: 'Selection Allowances' },
+      { name: 'Appliance Allowance', qty: 1, group: 'Selection Allowances' },
+      { name: 'Cabinet Allowance', qty: n(c['D88']), group: 'Selection Allowances' },
+      { name: 'Carpet Allowance', qty: n(c['D89']), group: 'Selection Allowances' },
+      { name: 'Countertop Allowance', qty: n(c['D90']), group: 'Selection Allowances' },
+      { name: 'Hardwood Flooring Allowance', qty: n(c['D91']), group: 'Selection Allowances' },
+      { name: 'Lighting Fixture Allowance', qty: n(c['D92']), group: 'Selection Allowances' },
+      { name: 'Plumbing Fixture Allowance', qty: n(c['D93']), group: 'Selection Allowances' },
+      { name: 'Tile Allowance', qty: n(c['D94']), group: 'Selection Allowances' },
+      { name: 'Clearing Allowance', qty: 1, group: 'Site Allowances' },
+      { name: 'Driveway Allowance', qty: 1, group: 'Site Allowances' },
+      { name: 'Landscaping Allowance', qty: n(c['D99']), group: 'Site Allowances' },
+      { name: 'Tap Fees', qty: 1, group: 'Site Allowances' },
+      { name: 'Realtor Fees', qty: n(c['D46']), group: 'Base House Pricing' },
+    ];
+    if (lender) items.push({ name: 'Preferred Lender Incentive', qty: 1, group: 'Preferred Lender Incentive' });
+
+    const ALLOWANCE_TIER_GROUP_A = ['Accessories Allowance','Appliance Allowance','Cabinet Allowance','Carpet Allowance','Countertop Allowance','Hardwood Flooring Allowance','Lighting Fixture Allowance','Plumbing Fixture Allowance','Tile Allowance'];
+    function tierDescription(tier) { if (tier === 'better') return 'Upgrade: Better'; if (tier === 'best') return 'Upgrade: Best'; return null; }
+    let allowanceTierMultipliers = { good: 1, better: 1, best: 1 };
+    try {
+      const { data: tierData, error: tierErr } = await sbClient.from('allowance_tier_settings').select('*').eq('id', 1).single();
+      if (tierErr || !tierData) throw new Error(tierErr ? tierErr.message : 'not found');
+      allowanceTierMultipliers = { good: Number(tierData.good_multiplier), better: Number(tierData.better_multiplier), best: Number(tierData.best_multiplier) };
+    } catch (e) { console.warn('[Keel] allowance tier multipliers unavailable, defaulting to Good:', e.message); }
+    const webTierByItemName = {};
+    document.querySelectorAll('.web-tier-select:checked').forEach(el => { webTierByItemName[el.dataset.item] = el.value || 'good'; });
+    items.forEach(item => {
+      if (!ALLOWANCE_TIER_GROUP_A.includes(item.name)) return;
+      const tier = webTierByItemName[item.name] || 'good';
+      const multiplier = allowanceTierMultipliers[tier];
+      if (multiplier && multiplier !== 1) item.qty = item.qty * multiplier;
+      const desc = tierDescription(tier);
+      if (desc) item.description = desc;
+    });
+
+    try {
+      const webUnitCosts = await fetchUnitCostsFromSupabaseWeb(items.map(it => it.name), selectedBasePlanHouse);
+      items.forEach(item => { const uc = webUnitCosts[item.name]; if (uc !== undefined && uc !== null) item.unitCost = uc; });
+    } catch (e) { console.error('[Keel][unitcost] fetch threw:', e); }
+
+    const notifyEstimator = false; // no real email is ever sent from this prototype
+
+    const customItems = [];
+    let customRowError = null;
+    document.querySelectorAll('#custom-rows .custom-row').forEach(row => {
+      if (customRowError) return;
+      const name = row.querySelector('.custom-input-name').value.trim();
+      const desc = (row.querySelector('.custom-input-desc') || {}).value?.trim() || '';
+      const priceRaw = row.querySelector('.custom-input-price').value.trim();
+      const price = parseFloat(priceRaw) || 0;
+      if (!name && !priceRaw) return;
+      if (name && (!priceRaw || price <= 0)) { customRowError = `Custom Selection Allowance "${name}" is missing a price.`; return; }
+      if (!name && priceRaw) { customRowError = 'A Custom Selection Allowance row has a price but no name.'; return; }
+      customItems.push({ name, description: desc, unitCost: price, qty: 1 });
+    });
+    if (customRowError) { showStatus(customRowError, 'error'); return; }
+
+    const basementFinishedSf = parseFloat($('basement-finished-sf').value) || 0;
+    const basementUnfinishedSf = parseFloat($('basement-unfinished-sf').value) || 0;
+    if (basementFinishedSf > 0 || basementUnfinishedSf > 0) {
+      const { data: pricingRows, error: pricingErr } = await sbClient.from('basement_pricing').select('*').eq('id', 1).single();
+      if (pricingErr || !pricingRows) { showStatus('Could not load basement pricing: ' + (pricingErr ? pricingErr.message : 'not found'), 'error'); return; }
+      const basementDescByName = {
+        'Unfinished Basement Allowance': ($('basement-unfinished-desc').value || '').trim(),
+        'Finished Basement Allowance': ($('basement-finished-desc').value || '').trim()
+      };
+      computeBasementLineItems(basementFinishedSf, basementUnfinishedSf, pricingRows).forEach(li => {
+        customItems.push({ name: li.name, description: basementDescByName[li.name] || '', unitCost: li.unitCost, qty: li.quantity });
+      });
+    }
+
+    const SITE_DROPDOWN_MAP = {
+      'so-sewer': { 'City (No Septic)': { title: 'Sewer - City (No Septic)' }, 'Conventional Septic': { title: 'Sewer - Conventional Septic' }, 'Engineered Septic': { title: 'Sewer - Engineered Septic' } },
+      'so-water': { 'Well': { title: 'Water - Well' } },
+      'so-tap': { 'None (Well/Septic)': { title: 'Municipal Tap Fees - None (Well/Septic)' }, 'Standard (12K)': { title: 'Municipal Tap Fees - Standard' }, 'High (18K)': { title: 'Municipal Tap Fees - High' } },
+      'so-clearing': { 'Light': { title: 'Lot Clearing - Light' }, 'Moderate': { title: 'Lot Clearing - Moderate' }, 'Heavy': { title: 'Lot Clearing - Heavy' } },
+      'so-driveway': { 'Short Gravel': { title: 'Driveway - Short Gravel' }, 'Standard (Gravel)': { title: 'Driveway - Standard (Gravel)' }, 'Long Gravel': { title: 'Driveway - Long Gravel' }, 'Asphalt': { title: 'Driveway - Asphalt' } },
+      'so-landscaping': { 'Basic': { title: 'Landscaping - Basic' }, 'Standard': { title: 'Landscaping - Standard' }, 'Extensive': { title: 'Landscaping - Extensive' } },
+    };
+    const SITE_ID_TO_CATEGORY = { 'so-sewer': 'Sewer', 'so-water': 'Water', 'so-tap': 'Tap Fees', 'so-clearing': 'Clearing', 'so-driveway': 'Driveway', 'so-landscaping': 'Landscaping' };
+    const siteOptions = [];
+    for (const id of ['so-sewer','so-water','so-tap','so-clearing','so-driveway','so-landscaping']) {
+      const val = $(id).value;
+      const map = SITE_DROPDOWN_MAP[id];
+      if (!val || !map || !map[val]) continue;
+      const unitCost = await lookupSiteOptionCost(SITE_ID_TO_CATEGORY[id], val);
+      siteOptions.push({ name: map[val].title || val, unitCost, qty: 1 });
+    }
+
+    // Apply markup (Allowance Markup replaces Markup Percent for allowance-
+    // type items; Realtor Fees always 0%; everything else gets the
+    // regular Markup Percent) -- mirrors tabpicker.js.
+    let markupPercent, allowanceMarkupPercent;
+    try {
+      const { data: markupData, error: markupErr } = await sbClient.from('markup_settings').select('markup_percent,allowance_markup_percent').eq('id', 1).single();
+      if (markupErr || !markupData) throw new Error(markupErr ? markupErr.message : 'not found');
+      markupPercent = Number(markupData.markup_percent) || 0;
+      allowanceMarkupPercent = Number(markupData.allowance_markup_percent) || 0;
+    } catch (e) {
+      console.warn('[Keel] markup_settings unavailable, defaulting to 0%:', e.message);
+      markupPercent = 0; allowanceMarkupPercent = 0;
+    }
+    function markupFor(name) {
+      if (name === 'Realtor Fees') return 0;
+      if (ALLOWANCE_ITEM_NAMES[name]) return allowanceMarkupPercent;
+      return markupPercent;
+    }
+    items.forEach(item => { item.markupPercent = markupFor(item.name); });
+    customItems.forEach(item => { item.markupPercent = allowanceMarkupPercent; });
+    siteOptions.forEach(item => { item.markupPercent = allowanceMarkupPercent; });
+
+    // ── Group + render ──────────────────────────────────────────────
+    const grouped = {};
+    GROUP_ORDER.forEach(g => { grouped[g] = []; });
+    items.forEach(item => {
+      const qty = Number(item.qty) || 0;
+      const unitCost = item.unitCost;
+      const total = (unitCost !== undefined && unitCost !== null) ? roundUpToCent(qty * unitCost * (1 + (item.markupPercent || 0) / 100)) : null;
+      grouped[item.group].push({ name: item.name, description: item.description || '', qty, unitCost, markupPercent: item.markupPercent, total });
+    });
+    customItems.forEach(item => {
+      const qty = Number(item.qty) || 1;
+      const total = roundUpToCent(qty * item.unitCost * (1 + (item.markupPercent || 0) / 100));
+      grouped['Custom Selection Allowances'].push({ name: item.name, description: item.description || '', qty, unitCost: item.unitCost, markupPercent: item.markupPercent, total });
+    });
+    siteOptions.forEach(item => {
+      const qty = 1;
+      const total = (item.unitCost !== undefined && item.unitCost !== null) ? roundUpToCent(qty * item.unitCost * (1 + (item.markupPercent || 0) / 100)) : null;
+      grouped['Site Allowances'].push({ name: item.name, description: '', qty, unitCost: item.unitCost, markupPercent: item.markupPercent, total });
+    });
+
+    const estimate = { generatedAt: new Date().toISOString(), groups: grouped, notes: $('sales-notes').value || '' };
+    localStorage.setItem(LS_ESTIMATE_KEY, JSON.stringify(estimate));
+    renderEstimate(estimate);
+    renderProposal(estimate);
+    $('tab-estimate').disabled = false;
+    $('tab-proposal').disabled = false;
+    showStatus('✓ Estimate generated.', 'success');
+    showPanel('estimate');
+  } catch (e) {
+    showStatus('Error: ' + e.message, 'error');
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Write to Estimate →';
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Rendering
+// ═══════════════════════════════════════════════════════════
+function money(n) { return (n === undefined || n === null) ? '—' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+let lastEstimate = null;
+
+function renderEstimate(estimate) {
+  lastEstimate = estimate;
+  const adminView = $('chk-adminview').checked;
+  // The "Show pre-markup prices" toggle only exists for admins auditing the
+  // math -- hidden entirely (and forced off) for the normal sales view, so
+  // a client-facing screen-share never shows a control for peeling back
+  // markup, only the already-marked-up numbers.
+  $('premarkup-toggle-wrap').classList.toggle('hidden', !adminView);
+  const preMarkup = adminView && $('chk-premarkup').checked;
+  $('estimate-generated-at').textContent = 'Generated ' + new Date(estimate.generatedAt).toLocaleString();
+  const wrap = $('estimate-groups');
+  wrap.innerHTML = '';
+  let grandTotal = 0;
+  GROUP_ORDER.forEach(groupName => {
+    const rows = estimate.groups[groupName] || [];
+    if (!rows.length) return;
+    const rowTotal = r => preMarkup
+      ? ((r.unitCost !== undefined && r.unitCost !== null) ? roundUpToCent(r.qty * r.unitCost) : null)
+      : r.total;
+    const groupTotal = rows.reduce((s, r) => s + (rowTotal(r) || 0), 0);
+    grandTotal += groupTotal;
+    const groupEl = document.createElement('div');
+    groupEl.className = 'est-group';
+    groupEl.innerHTML = `
+      <div class="est-group-hdr"><span>${groupName}</span><span class="grp-total">${money(groupTotal)}</span></div>
+      <table class="est-table">
+        <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Unit Cost</th>${adminView ? '<th class="num">Markup</th>' : ''}<th class="num">Total</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td>${r.name}${r.description ? `<div class="item-desc">${r.description}</div>` : ''}</td>
+              <td class="num">${r.qty}</td>
+              <td class="num">${money(r.unitCost)}</td>
+              ${adminView ? `<td class="num">${preMarkup ? '—' : r.markupPercent + '%'}</td>` : ''}
+              <td class="num">${money(rowTotal(r))}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    wrap.appendChild(groupEl);
+  });
+  $('estimate-grand-total').textContent = money(grandTotal);
+  $('estimate-grand-total-label').textContent = preMarkup ? 'Total Estimate (Pre-Markup)' : 'Total Estimate';
+}
+$('chk-premarkup').addEventListener('change', () => { if (lastEstimate) renderEstimate(lastEstimate); });
+$('chk-adminview').addEventListener('change', () => { if (lastEstimate) renderEstimate(lastEstimate); });
+
+// Which physical unit to show next to a line item's name (client-facing —
+// the quantity being measured, never the per-unit rate that produced the
+// price). Only items with qty !== 1 ever show anything (see qtyLabel) --
+// a lump-sum row showing "1 EA" isn't useful information -- so this only
+// needs entries for the genuinely count/area-driven rows.
+const ITEM_UNIT_LABELS = {
+  'Total Finished SF & Unfinished (Under Roof)': 'SF', 'Total Finished SF': 'SF',
+  'Total Finished SF & Unfinished SF (Under Roof Excluding Porches)': 'SF',
+  'Total Garage SF': 'SF', 'Total 1st Floor Finished, 1st Floor Unfinished & Garage': 'SF',
+  'Total 1st Floor, Garage & Porch SF': 'SF', 'Total Finished 1st Floor SF': 'SF',
+  'Total for Decks & Porches': 'SF', 'Realtor Fees': 'SF',
+  'Interior Stairs': 'Staircase(s)', 'Exterior Doors': 'Door(s)', 'Windows': 'Window(s)',
+  'Porch Columns': 'Column(s)', 'Interior Doors': 'Door(s)', 'Garage Door': 'Door(s)',
+  'Number of Baths': 'Bath(s)', 'Cabinet Allowance': 'LF', 'Countertop Allowance': 'LF',
+  'Carpet Allowance': 'SF', 'Hardwood Flooring Allowance': 'SF', 'Tile Allowance': 'SF',
+  'Landscaping Allowance': 'SF', 'Plumbing Fixture Allowance': 'Bath(s)'
+};
+// No fallback unit for anything not listed above (e.g. Accessories/Lighting
+// Fixture Allowance, whose "quantity" is really just an internal SF-based
+// pricing multiplier, not a real physical count) -- showing "2,812 ea" next
+// to those would be actively misleading on a client-facing document, so an
+// unmapped item just shows its total with no quantity badge at all.
+function qtyLabel(r) {
+  if (!r.qty || r.qty === 1) return '';
+  const unit = ITEM_UNIT_LABELS[r.name];
+  if (!unit) return '';
+  const qtyStr = Number.isInteger(r.qty) ? r.qty.toLocaleString('en-US') : r.qty.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return qtyStr + ' ' + unit;
+}
+
+// The 3 "Documents Used" fill-in lines persist across reloads the same
+// way the rest of the form does, just keyed separately since they live
+// inside the Proposal panel (which is fully rebuilt on every render,
+// unlike the Input panel's fields).
+const LS_PROPOSAL_DOCS_KEY = 'keel-mock-estimate-proposal-docs';
+function loadProposalDocs() {
+  try { return JSON.parse(localStorage.getItem(LS_PROPOSAL_DOCS_KEY) || 'null') || {}; } catch (e) { return {}; }
+}
+function saveProposalDocs() {
+  const docs = {};
+  document.querySelectorAll('.doc-fill-input').forEach(el => { docs[el.dataset.doc] = el.value; });
+  localStorage.setItem(LS_PROPOSAL_DOCS_KEY, JSON.stringify(docs));
+}
+
+function renderProposal(estimate) {
+  const doc = $('proposal-doc');
+  const savedDocs = loadProposalDocs();
+  let grandTotal = 0;
+  const sections = GROUP_ORDER.map(groupName => {
+    const rows = (estimate.groups[groupName] || []).filter(r => r.total !== null && r.total > 0);
+    if (!rows.length) return '';
+    const groupTotal = rows.reduce((s, r) => s + (r.total || 0), 0);
+    grandTotal += groupTotal;
+    return `
+      <div class="proposal-section">
+        <h2>${groupName}</h2>
+        ${rows.map(r => {
+          const qtyStr = qtyLabel(r);
+          return `<div class="proposal-row"><span class="name-wrap">${r.name}${qtyStr ? `<span class="qty-badge">${qtyStr}</span>` : ''}</span><span class="amt">${money(r.total)}</span></div>`;
+        }).join('')}
+      </div>
+    `;
+  }).join('');
+
+  doc.innerHTML = `
+    <div class="proposal-hero">
+      <div class="hero-label">Milestone 1 Conceptual Budget</div>
+      <div class="hero-amount">${money(grandTotal)}</div>
+      <div class="hero-sub">Prepared ${new Date(estimate.generatedAt).toLocaleDateString()}</div>
+    </div>
+
+    <div class="proposal-intro">
+      <h1>Milestone 1: Budget for Contract Proposal</h1>
+      <p class="purpose">Purpose: Feasibility + Alignment</p>
+
+      <h2>Milestone Overview</h2>
+      <p>This proposal represents Milestone 1 – Conceptual Budget Pricing. This proposal reflects our initial conceptual budget based on the information available at this stage, including preliminary design details, assumed site conditions, and historical cost data.</p>
+      <p>It is intended to help us begin the process together and provide a realistic planning framework. As your plans, selections, and site details are further developed, this budget will be refined to align more precisely with your final home.</p>
+
+      <h2>Documents Used</h2>
+      <div class="doc-fill-row"><label>PLAN:</label><input class="doc-fill-input" data-doc="plan" value="${(savedDocs.plan || '').replace(/"/g, '&quot;')}" placeholder="Plan name / revision…"></div>
+      <div class="doc-fill-row"><label>SITE INFO:</label><input class="doc-fill-input" data-doc="siteInfo" value="${(savedDocs.siteInfo || '').replace(/"/g, '&quot;')}" placeholder="Site info reference…"></div>
+      <div class="doc-fill-row"><label>SPECS/ALLOWANCES:</label><input class="doc-fill-input" data-doc="specs" value="${(savedDocs.specs || '').replace(/"/g, '&quot;')}" placeholder="Specs/allowances reference…"></div>
+    </div>
+
+    ${sections}
+
+    <div class="proposal-closing">
+      <h2>Budget Pricing Summary</h2>
+      <p>The pricing shown in this proposal represents the initial contract amount for Milestone 1 and is based on the information available at this stage of the project. Because detailed selections and final site confirmations have not yet been completed, this is not the final contract price.</p>
+      <p>This budget is intended to establish feasibility, provide direction, and support loan preapproval. As plans are finalized, site conditions are verified, and selections are made, the contract pricing will be refined to reflect the specific scope and investment of your home.</p>
+      <p>Any adjustments resulting from confirmed site conditions, completed selections, or requested upgrades will be clearly communicated as information becomes available.</p>
+
+      <h2>Allowance Structure &amp; Budget Assumptions</h2>
+      <h3>Allowances</h3>
+      <p>This budget includes allowances for major finish categories. These are placeholder amounts intended to provide a realistic starting point and do not reflect specific brands, products, or final selections at this stage.</p>
+      <p>Final costs will be determined once selections are completed.</p>
+      <ul>
+        <li>If selections exceed the allowance, the difference plus applicable builder markup will be added to the project cost.</li>
+        <li>If selections come in under the allowance, a credit will be applied.</li>
+      </ul>
+
+      <h3>Budget Assumptions</h3>
+      <p>This budget is based on the following standard residential construction assumptions. If any of these conditions differ, adjustments to cost, design, or schedule may be required.</p>
+
+      <h4>Lot &amp; Approvals</h4>
+      <ul>
+        <li>The lot is legally buildable and compliant with zoning, setbacks, easements, floodplain, and municipal requirements.</li>
+        <li>No rezoning, variances, special use permits, or additional jurisdictional approvals are required.</li>
+        <li>No unusual HOA or architectural review requirements beyond typical residential standards.</li>
+      </ul>
+
+      <h4>Site &amp; Soil Conditions</h4>
+      <ul>
+        <li>Standard soil conditions suitable for typical residential foundation construction.</li>
+        <li>No rock excavation, blasting, or unsuitable soils requiring remediation.</li>
+        <li>Standard foundation type as reflected in current plans.</li>
+        <li>No unanticipated environmental conditions, including wetlands or protected areas.</li>
+      </ul>
+
+      <h4>Utilities &amp; Infrastructure</h4>
+      <ul>
+        <li>Standard utility access is available at the homesite.</li>
+        <li>No off-site utility extensions or upgrades are required.</li>
+        <li>No extraordinary stormwater management requirements beyond typical residential construction.</li>
+      </ul>
+
+      <h4>Construction Conditions</h4>
+      <ul>
+        <li>No unusual site constraints affecting access, staging, or logistics.</li>
+        <li>No material shortages or trade disruptions beyond normal market conditions.</li>
+        <li>Plans provided are accurate and complete for this phase of pricing.</li>
+      </ul>
+      <p>If any of these assumptions prove to be inaccurate, additional costs may be incurred.</p>
+
+      <h2>Items Not Included in This Budget</h2>
+      <p>Unless specifically noted elsewhere in the proposal, the following items are not included:</p>
+      <ul>
+        <li>Building permits and government fees beyond the municipality's building permit</li>
+        <li>Utility provider fees and service connection charges</li>
+        <li>Well and septic systems (refer to allowances, if applicable)</li>
+        <li>Landscaping beyond minimum stabilization</li>
+        <li>Off-site improvements or upgrades required by local authorities</li>
+      </ul>
+      <p>Depending on the lot, jurisdiction, or lender requirements, these items may be required and are often paid directly by the homeowner or financed separately.</p>
+
+      <h2>What Comes Next</h2>
+      <p>Milestone 2 is where your home begins to take shape. During this phase, we align your site, structural decisions, and exterior selections to significantly reduce pricing uncertainty and move toward a refined price range.</p>
+
+      <h3>Milestone 2 — Site, Design, and Structural Alignment</h3>
+      <p><strong>Purpose</strong><br>Lock in the size, structure, and exterior of your home to reduce uncertainty and bring greater clarity to pricing.</p>
+      <p><strong>During This Phase</strong></p>
+      <h4>You Provide</h4>
+      <ul>
+        <li>Final approval of plan layout and square footage</li>
+        <li>Exterior selections including roof, windows, siding, doors, and related finishes</li>
+        <li>Completed site design including house location, driveway layout, clearing, and utilities</li>
+      </ul>
+      <h4>Keel Provides</h4>
+      <ul>
+        <li>"Bid Set" floor plans</li>
+        <li>Defined structural system</li>
+        <li>Exterior and site selections priced</li>
+        <li>A refined price range</li>
+      </ul>
+
+      <h3>The Next Step</h3>
+      <p><strong>Make this home yours.</strong></p>
+      <p>With the design aligned and pricing refined, we move confidently into the next milestone and continue turning your plans into reality.</p>
+    </div>
+  `;
+  doc.querySelectorAll('.doc-fill-input').forEach(el => el.addEventListener('input', saveProposalDocs));
+}
+
+// ═══════════════════════════════════════════════════════════
+// Boot
+// ═══════════════════════════════════════════════════════════
+(async function boot() {
+  restoreInputsFromStorage();
+  applySiteOptionDefaults();
+  if (sbClient) await loadHouses();
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(LS_ESTIMATE_KEY) || 'null'); } catch (e) { saved = null; }
+  if (saved) {
+    renderEstimate(saved);
+    renderProposal(saved);
+    $('tab-estimate').disabled = false;
+    $('tab-proposal').disabled = false;
+  }
+  // Re-render the proposal fresh each time it's opened, using whatever's
+  // currently saved (keeps it in sync if a newer estimate was generated).
+  $('tab-proposal').addEventListener('click', () => {
+    try { const cur = JSON.parse(localStorage.getItem(LS_ESTIMATE_KEY) || 'null'); if (cur) renderProposal(cur); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
