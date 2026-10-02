@@ -554,7 +554,11 @@ async function fetchUnitCostsFromSupabaseWeb(itemNames, selectedHouseKey) {
 async function lookupSiteOptionCost(category, optionLabel) {
   const { data, error } = await sbClient.from('site_options').select('option_label,cost').eq('category', category);
   if (error) throw new Error('Supabase site_options read failed: ' + error.message);
-  const match = (data || []).find(r => (r.option_label || '').trim().toLowerCase() === optionLabel.trim().toLowerCase());
+  // Labels are compared ignoring case and "$" -- the dropdown says
+  // "Standard (12K)" while the site_options table stores "Standard ($12K)",
+  // which used to miss and leave that line with no price at all.
+  const norm = s => (s || '').replace(/\$/g, '').trim().toLowerCase();
+  const match = (data || []).find(r => norm(r.option_label) === norm(optionLabel));
   return match ? Number(match.cost) || 0 : undefined;
 }
 function computeBasementLineItems(finishedSf, unfinishedSf, pricing) {
@@ -1014,6 +1018,13 @@ $('btn-write-estimate').addEventListener('click', async () => {
       'so-landscaping': { 'Basic': { title: 'Landscaping - Basic' }, 'Standard': { title: 'Landscaping - Standard' }, 'Extensive': { title: 'Landscaping - Extensive' } },
     };
     const SITE_ID_TO_CATEGORY = { 'so-sewer': 'Sewer', 'so-water': 'Water', 'so-tap': 'Tap Fees', 'so-clearing': 'Clearing', 'so-driveway': 'Driveway', 'so-landscaping': 'Landscaping' };
+    // A chosen Site Option replaces the generic allowance line covering the
+    // same thing, instead of being added on top of it (otherwise Lot
+    // Clearing - Light would be charged alongside Clearing Allowance).
+    // Only when the option actually priced -- if its lookup came back empty
+    // the allowance stays, so a miss never silently drops the cost.
+    const SITE_OPTION_REPLACES = { 'so-clearing': 'Clearing Allowance', 'so-driveway': 'Driveway Allowance', 'so-landscaping': 'Landscaping Allowance', 'so-tap': 'Tap Fees' };
+    const replacedAllowances = new Set();
     const siteOptions = [];
     for (const id of ['so-sewer','so-water','so-tap','so-clearing','so-driveway','so-landscaping']) {
       const val = $(id).value;
@@ -1021,6 +1032,7 @@ $('btn-write-estimate').addEventListener('click', async () => {
       if (!val || !map || !map[val]) continue;
       const unitCost = await lookupSiteOptionCost(SITE_ID_TO_CATEGORY[id], val);
       siteOptions.push({ name: map[val].title || val, unitCost, qty: 1 });
+      if (unitCost !== undefined && SITE_OPTION_REPLACES[id]) replacedAllowances.add(SITE_OPTION_REPLACES[id]);
     }
 
     // Apply markup (Allowance Markup replaces Markup Percent for allowance-
@@ -1049,6 +1061,7 @@ $('btn-write-estimate').addEventListener('click', async () => {
     const grouped = {};
     GROUP_ORDER.forEach(g => { grouped[g] = []; });
     items.forEach(item => {
+      if (replacedAllowances.has(item.name)) return;
       const qty = Number(item.qty) || 0;
       const unitCost = item.unitCost;
       const total = (unitCost !== undefined && unitCost !== null) ? roundUpToCent(qty * unitCost * (1 + (item.markupPercent || 0) / 100)) : null;
